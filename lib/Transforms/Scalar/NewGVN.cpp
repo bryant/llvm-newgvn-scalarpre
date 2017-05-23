@@ -153,6 +153,9 @@ static cl::opt<bool> EnableStoreRefinement("enable-store-refinement",
 /// Currently, the generation "phi of ops" can result in correctness issues.
 static cl::opt<bool> EnablePhiOfOps("enable-phi-of-ops", cl::init(true),
                                     cl::Hidden);
+// Run SSAPRE on loads.
+static cl::opt<bool> EnableNewLoadPRE("enable-new-load-pre", cl::init(false),
+                                      cl::Hidden);
 
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
@@ -781,6 +784,7 @@ private:
 
   // Elimination.
   struct ValueDFS;
+  ValueDFS convertInstToVDFS(Instruction &) const;
   void convertClassToDFSOrdered(const CongruenceClass &,
                                 SmallVectorImpl<ValueDFS> &,
                                 DenseMap<const Value *, unsigned int> &,
@@ -789,6 +793,7 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
+  bool scalarPRE(Function &);
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
@@ -3389,6 +3394,8 @@ void NewGVN::iterateTouchedInstructions() {
   NumGVNMaxIterations = std::max(NumGVNMaxIterations.getValue(), Iterations);
 }
 
+static bool loadPRE(Function &);
+
 // This is the main transformation entry point.
 bool NewGVN::runGVN() {
   if (DebugCounter::isCounterSet(VNCounter))
@@ -3456,6 +3463,7 @@ bool NewGVN::runGVN() {
   verifyStoreExpressions();
 
   Changed |= eliminateInstructions(F);
+  Changed |= EnableNewLoadPRE ? loadPRE(F) : Changed;
 
   // Delete all instructions marked for deletion.
   for (Instruction *ToErase : InstructionsToErase) {
@@ -4253,3 +4261,5 @@ PreservedAnalyses NewGVNPass::run(Function &F, AnalysisManager<Function> &AM) {
   PA.preserve<GlobalsAA>();
   return PA;
 }
+
+#include "llvm/Transforms/Scalar/NewLoadPRE.h"
