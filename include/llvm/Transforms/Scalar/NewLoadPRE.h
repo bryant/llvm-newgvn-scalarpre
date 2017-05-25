@@ -114,6 +114,6 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDF) {
   std::sorted(DPOSorted.begin(), DPOSorted.end(),
               [](const Occurrence *A, const Occurrence *B) {
                 return std::tie(A->in(), B->out(), A->LocalNum) <
-                       std::tie(b->in(), A->out(), B->LocalNum);
+                       std::tie(B->in(), A->out(), B->LocalNum);
               });
 }
