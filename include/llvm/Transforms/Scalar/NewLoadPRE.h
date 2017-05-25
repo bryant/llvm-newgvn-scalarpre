@@ -228,10 +228,10 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   std::vector<Occurrence *> DPOSorted;
   DPOSorted.reserve(Cong.size());
 
-  // Add a real occurrence for each cong member, an exit occ for ebery exit
-  // vlock, and phi occs at IDFs of each rea; occ. Sort them together into
-  // dominator pre-order and visit each one, keepimg a stack of current
-  // domjmating occurrence.
+  // Add a real occurrence for each cong member, an exit occurrence for every
+  // exit block, and phi occurrences at IDFs of each real occurrence. Sort them
+  // together into dominator pre-order and visit each one, keeping a stack of
+  // current dominating occurrence.
 
   // TODO: This only needs to be done once for all cong classes.
   std::vector<ExitOcc> ExitOccs;
