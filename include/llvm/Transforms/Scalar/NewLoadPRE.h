@@ -237,6 +237,8 @@ private:
 struct ClearGuard {
   PlaceAndFill Inner;
 
+  ClearGuard(const DominatorTree &DT, unsigned NumBlocks)
+      : Inner(DT, NumBlocks) {}
   ~ClearGuard() { Inner.clear(); }
   void addDef(RealOcc &Occ) { return Inner.addDef(Occ); }
   void calculate() { return Inner.calculate(); }
