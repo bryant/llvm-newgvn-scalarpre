@@ -235,10 +235,9 @@ private:
 
 // Enaures that PlaceAndFill is cleared between successive scalarPRE calls.
 struct ClearGuard {
-  PlaceAndFill Inner;
+  PlaceAndFill &Inner;
 
-  ClearGuard(const DominatorTree &DT, unsigned NumBlocks)
-      : Inner(DT, NumBlocks) {}
+  ClearGuard(PlaceAndFill &Inner) : Inner(Inner) {}
   ~ClearGuard() { Inner.clear(); }
   void addDef(RealOcc &Occ) { return Inner.addDef(Occ); }
   void calculate() { return Inner.calculate(); }
