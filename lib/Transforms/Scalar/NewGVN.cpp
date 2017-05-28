@@ -3462,12 +3462,7 @@ bool NewGVN::runGVN() {
   verifyStoreExpressions();
 
   Changed |= eliminateInstructions(F);
-
-  if (EnableScalarPRE) {
-    PlaceAndFill IDF(DT, F.size());
-    for (CongruenceClass &Cong : CongruenceClasses)
-      Changed |= scalarPRE(F, Cong, ClearGuard(IDF));
-  }
+  Changed |= EnableScalarPRE ? scalarPRE(F) : Changed;
 
   // Delete all instructions marked for deletion.
   for (Instruction *ToErase : InstructionsToErase) {

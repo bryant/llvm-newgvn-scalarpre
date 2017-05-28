@@ -243,7 +243,14 @@ struct ClearGuard {
   void calculate() { return Inner.calculate(); }
 };
 
-bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
+bool NewGVN::scalarPRE(Function &F) {
+  PlaceAndFill IDF(DT, F.size());
+  return any_of(CongruenceClasses, [&](CongruenceClass &Cong) {
+    return preClass(F, Cong, ClearGuard(IDF));
+  });
+}
+
+static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   if (Cong.size() <= 1)
     // On singleton classes, PRE's sole possible effect is loop-invariant
     // hoisting. But this is already covered by other loop-hoisting passes.
