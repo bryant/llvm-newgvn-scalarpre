@@ -1,3 +1,4 @@
+namespace {
 enum OccType {
   OccReal,
   OccPhi,
@@ -432,4 +433,5 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   // At this point, CanBeAvail will be true for a phi iff it's fully available
   // (empty Unavail) or partially available (non-empty Unavail) but down-safe
   // insertions can be made.
+}
 }
