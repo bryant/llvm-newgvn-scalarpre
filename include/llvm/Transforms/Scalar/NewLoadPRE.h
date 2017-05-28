@@ -253,10 +253,10 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   DPOSorted.reserve(Cong.size());
 
   // Add a real occurrence for each cong member, an exit occurrence for every
-  // exit block, and phi occurrences at IDFs of each real occurrence (because
-  // those are the possible sites of partial redundancy). Then sort the
-  // occurrences into the order in which each would be encountered during a
-  // pre-order walk of the dom tree.
+  // exit block, and phi occurrences at IDFs of each real occurrence (these
+  // possible sites of partial redundancy). Then sort the occurrences into the
+  // order in which each would be encountered during a pre-order walk of the dom
+  // tree.
 
   // TODO: This only needs to be done once for all cong classes.
   std::vector<ExitOcc> ExitOccs;
@@ -429,14 +429,7 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
     }
   }
 
-  // At this point, partial redundancies will appear as phi occurrences with
-  // non-empty Unavail. Of these phis, the ones with CanBeAvail == true can be
-  // made fully redundant by inserting expressions into each of the Unavail
-  // blocks. Otherwise, if Unavail is empty, then all users of the phi are
-  // already fully redundant.
-
-  for (PhiOcc &Phi : PhiOccs) {
-    for (
-    if (Phi.CanBeAvail
-  }
+  // At this point, CanBeAvail will be true for a phi iff it's fully available
+  // (empty Unavail) or partially available (non-empty Unavail) but down-safe
+  // insertions can be made.
 }
