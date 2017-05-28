@@ -429,11 +429,11 @@ bool NewGVN::scalarPRE(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
     }
   }
 
-  // At this point, all partial redundancies will appear as phi occurrences
-  // with !Unavail.empty(). Any such phi that has CanBeAvail == true can be made
-  // fully redundant by inserting expresions into each of the Unavail blocks.
-  // Otherwise, if Unavail is empty, then all users of the phi are already fully
-  // redundant.
+  // At this point, partial redundancies will appear as phi occurrences with
+  // non-empty Unavail. Of these phis, the ones with CanBeAvail == true can be
+  // made fully redundant by inserting expresions into each of the Unavail
+  // blocks. Otherwise, if Unavail is empty, then all users of the phi are
+  // already fully redundant.
 
   for (PhiOcc &Phi : PhiOccs) {
     for (
