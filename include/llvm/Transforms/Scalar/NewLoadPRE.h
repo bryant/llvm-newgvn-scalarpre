@@ -17,6 +17,8 @@ struct Occurrence {
   unsigned out() const { return Node->getDFSNumOut(); }
 };
 
+struct PhiOcc;
+
 struct RealOcc final : public Occurrence {
   Occurrence *Def;
   // ^ Possible values:
@@ -29,11 +31,12 @@ struct RealOcc final : public Occurrence {
   PointerUnion<Instruction *, StoreInst *> I;
 
   RealOcc(DomTreeNode &N, unsigned LocalNum, Instruction &I_, bool NewVers)
-      : Occurrence{&N, LocalNum, OccReal}, Def(NewVers ? nullptr : -1u) {
+      : Occurrence{&N, LocalNum, OccReal},
+        Def(NewVers ? nullptr : reinterpret_cast<Occurrence *>(-1u)) {
     if (auto *SI = dyn_cast<StoreInst>(&I))
       I = SI;
     else
-      I = I_;
+      I = &I_;
   }
 
   void setDef(Occurrence &Occ) {
@@ -44,7 +47,7 @@ struct RealOcc final : public Occurrence {
 
   bool isNewVersion() const { return Def == nullptr; }
 
-  PointerUnion<Instruction *, StoreInst *> &getInst() const { return I; }
+  PointerUnion<Instruction *, StoreInst *> &getInst() { return I; }
 
   static bool classof(const Occurrence &Occ) { return Occ.Type == OccReal; }
 };
@@ -81,7 +84,7 @@ struct PhiOcc final : public Occurrence {
       P->addUse(*this, Defs.size() - 1);
   }
 
-  void addUse(PhiOcc &P, unsigned OpIdx) { PhiUse.emplace_back(&P, OpIdx); }
+  void addUse(PhiOcc &P, unsigned OpIdx) { PhiUses.emplace_back(&P, OpIdx); }
 
   void addUse(RealOcc &R) { Uses.emplace_back(&R); }
 
@@ -104,7 +107,7 @@ struct ExitOcc final : public Occurrence {
 struct PiggyBank {
   using Node = Occurrence *;
 
-  std::vector<Node> Banks;
+  std::vector<std::vector<Node>> Banks;
   unsigned CurrentLevel;
 
   PiggyBank(unsigned TreeHeight)
@@ -137,6 +140,7 @@ struct PiggyBank {
 // pushes operands into phis as they are placed. Doing this obviates the need
 // for a full DPO walk during renaming.
 struct PlaceAndFill {
+  const DominatorTree &DT;
   PiggyBank DefQ;
   // ^ Imposes an order on defs so that phis are inserted from highest- to
   // lowest-ranked, thus preventing dom sub-tree re-traversals.
@@ -147,7 +151,7 @@ struct PlaceAndFill {
   std::vector<DomTreeNode *> SubtreeStack;
   // ^ Stack for visiting def node subtrees in pre-order.
 
-  PlaceAndFill(const DominatorTree &DT, unsigned NumBlocks) {
+  PlaceAndFill(const DominatorTree &DT, unsigned NumBlocks) : DT(DT) {
     // Prevent re-allocs.
     Levels.reserve(NumBlocks);
     Defs.reserve(NumBlocks);
@@ -204,25 +208,25 @@ private:
     while (!SubtreeStack.empty()) {
       DomTreeNode &SubNode = *SubtreeStack.back();
       for (BasicBlock *Succ : successors(SubNode.getBlock())) {
-        DomTreeNode &SuccNode = DT.getNode(Succ);
+        DomTreeNode &SuccNode = *DT.getNode(Succ);
         unsigned SuccLevel;
 
         // Skip if it's a dom tree edge (not a J-edge).
         if (SuccNode->getIDom() == SubNode &&
-            (SuccLevel = *Levels.find(SuccNode)) > CurDefLevel)
+            (SuccLevel = Levels.find(&SuccNode)->second) > CurDefLevel)
           continue;
 
         // SuccNode belongs in CurDef's DF. Check if a phi has been placed.
-        PhiOcc NewPhi(*SuccNode, CurDef, CurDef->getBlock());
+        PhiOcc NewPhi(SuccNode, *CurDef, CurDef->getBlock());
         auto InsPair = Phis.insert({Succ, std::move(NewPhi)});
         if (!InsPair.second)
           // Already inserted a phi into this block, which means that its DF+
           // has already been visited.
-          InsPair.first->addOperand(CurDef, CurDef->getBlock());
+          InsPair.first->second.addOperand(*CurDef, CurDef->getBlock());
         else if (!Defs.count(Succ))
           // New phi was inserted, meaning that this is the first encounter of
           // this DF member. Recurse on its DF.
-          DefQ.push(*InsPair.first, SuccLevel);
+          DefQ.push(InsPair.first->second, SuccLevel);
       }
 
       // Continue dom subtree DFS.
@@ -239,34 +243,24 @@ struct ClearGuard {
 
   ClearGuard(PlaceAndFill &Inner) : Inner(Inner) {}
   ~ClearGuard() { Inner.clear(); }
-  void addDef(RealOcc &Occ) { return Inner.addDef(Occ); }
-  void calculate() { return Inner.calculate(); }
+  auto addDef(RealOcc &Occ) -> decltype(Inner.addDef(Occ)) {
+    return Inner.addDef(Occ);
+  }
+  auto calculate() -> decltype(Inner.calculate()) { return Inner.calculate(); }
 };
 
-bool NewGVN::scalarPRE(Function &F) {
-  // Pre-compute set of exit occurrences as it's the same for all cong classes.
-  std::vector<ExitOcc> ExitOccs;
-  for (BasicBlock &BB : F)
-    if (isa<ReturnInst>(BB.getTerminator()) ||
-        isa<UnreachableInst>(BB.getTerminator()))
-      ExitOccs.emplace_back(*DT.getBlock(&BB));
+bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
+                      std::vector<Occurrence *> ExitOccs) {
+  const DominatorTree &DT = *DT;
 
-  PlaceAndFill IDF(DT, F.size());
-  return any_of(CongruenceClasses, [&](CongruenceClass &Cong) {
-    return preClass(F, Cong, ClearGuard(IDF), ExitOccs);
-  });
-}
-
-static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
-                     ArrayRef<ExitOcc> ExitOccs) {
   if (Cong.size() <= 1)
     // On singleton classes, PRE's sole possible effect is loop-invariant
     // hoisting. But this is already covered by other loop-hoisting passes.
-    return;
+    return false;
 
   std::vector<RealOcc> RealOccs;
   RealOccs.reserve(Cong.size());
-  std::vector<Occurrence *> DPOSorted;
+  std::vector<Occurrence *> &DPOSorted = ExitOccs;
   DPOSorted.reserve(Cong.size() + ExitOccs.size());
 
   // Add a real occurrence for each cong member, an exit occurrence for every
@@ -275,13 +269,10 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // order in which each would be encountered during a pre-order walk of the dom
   // tree.
 
-  // Add exit occurrences.
-  for (ExitOcc &E : ExitOccs)
-    DPOSorted.push_back(&E);
-
   // TODO: Not all cong members should be pushed, such as maybe ones with side
   // effects that won't be eliminated regardless of redundancy.
-  for (Instruction *I : Cong) {
+  for (Value *V : Cong) {
+    Instruction *I = cast<Instruction>(V);
     RealOccs.emplace_back(*DT.getNode(I->getParent()), InstrToDFSNum(I), *I,
                           I == Cong.getLeader());
     DPOSorted.push_back(&RealOccs.back());
@@ -290,15 +281,19 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
 
   // Phi occurrences are given operands as they are placed.
   DenseMap<const BasicBlock *, PhiOcc> Phis = IDFCalc.calculate();
+  std::vector<PhiOcc> PhiOccs;
+  PhiOcc.reserve(Phis.size());
   DPOSorted.reserve(DPOSorted.size() + Phis.size());
-  for (auto &P : Phis)
+  for (auto &P : Phis) {
     DPOSorted.push_back(&P.second);
+    P
+  }
 
-  std::sorted(DPOSorted.begin(), DPOSorted.end(),
-              [](const Occurrence *A, const Occurrence *B) {
-                return std::tie(A->in(), B->out(), A->LocalNum) <
-                       std::tie(B->in(), A->out(), B->LocalNum);
-              });
+  std::sort(DPOSorted.begin(), DPOSorted.end(), [](const Occurrence *A,
+                                                   const Occurrence *B) {
+    unsigned ain = A->in(), bin = B->in(), aout = A->out(), bout = B->out();
+    return std::tie(ain, bout, A->LocalNum) < std::tie(bin, aout, B->LocalNum);
+  });
 
   // Link uses to defs and eliminate full redundancies wherever possible. This
   // is just sparsified SSA renaming.
@@ -358,7 +353,7 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         // probably dead if it has no side effects, but do set its def because
         // its phi operands uses need to be updated to RDom (later).
         R->setDef(RDom);
-        R->replaceWith(*RDom);
+        // R->replaceWith(*RDom);
 
         // Mark its deadness. Quickly short-circuit if a store (which trivially
         // has side effects).
@@ -369,7 +364,7 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         // TODO: Unnecessary phis are placed when P is in the DF of some R
         // dominated by RDom and could thus be prevented with an initial FRE
         // pass before phi placement.
-        P->replaceWith(*RDom);
+        // P->replaceWith(*RDom);
       } else if (auto *Ex = dyn_cast<ExitOcc>(Occ)) {
         // Exposure to exit has no effect on real occurrences.
       } else
@@ -445,5 +440,22 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // At this point, CanBeAvail will be true for a phi iff it's fully available
   // (empty Unavail) or partially available (non-empty Unavail) but down-safe
   // insertions can be made.
+}
+
+bool NewGVN::scalarPRE(Function &F) {
+  // Pre-compute set of exit occurrences as it's the same for all cong classes.
+  std::vector<ExitOcc> ExitOccs;
+  std::vector<Occurrence *> Ptrs;
+  for (BasicBlock &BB : F)
+    if (isa<ReturnInst>(BB.getTerminator()) ||
+        isa<UnreachableInst>(BB.getTerminator())) {
+      ExitOccs.emplace_back(*DT->getNode(&BB));
+      Ptrs.push_back(&ExitOccs.back());
+    }
+
+  PlaceAndFill IDF(*DT, F.size());
+  return any_of(CongruenceClasses, [&](CongruenceClass &Cong) {
+    return preClass(F, Cong, ClearGuard(IDF), Ptrs, *DT);
+  });
 }
 }

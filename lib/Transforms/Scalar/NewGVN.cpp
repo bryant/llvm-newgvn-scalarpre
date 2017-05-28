@@ -488,7 +488,7 @@ template <> struct DenseMapInfo<const Expression *> {
 
 namespace {
 struct ClearGuard;
-
+struct Occurrence;
 class NewGVN {
   Function &F;
   DominatorTree *DT;
@@ -794,7 +794,9 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
-  bool scalarPRE(Function &, CongruenceClass &, ClearGuard) {
+  bool preClass(Function &, CongruenceClass &, ClearGuard,
+                std::vector<Occurrence *>);
+  bool scalarPRE(Function &);
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
