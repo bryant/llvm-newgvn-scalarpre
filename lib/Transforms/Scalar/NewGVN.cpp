@@ -154,7 +154,7 @@ static cl::opt<bool> EnableStoreRefinement("enable-store-refinement",
 static cl::opt<bool> EnablePhiOfOps("enable-phi-of-ops", cl::init(true),
                                     cl::Hidden);
 // Run SSAPRE on loads.
-static cl::opt<bool> EnableNewLoadPRE("enable-new-load-pre", cl::init(false),
+static cl::opt<bool> EnableScalarPRE("enable-scalar-pre", cl::init(false),
                                       cl::Hidden);
 
 //===----------------------------------------------------------------------===//
@@ -487,6 +487,7 @@ template <> struct DenseMapInfo<const Expression *> {
 } // end namespace llvm
 
 namespace {
+struct ClearGuard;
 
 class NewGVN {
   Function &F;
@@ -793,7 +794,7 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
-  bool scalarPRE(Function &);
+  bool scalarPRE(Function &, CongruenceClass &, ClearGuard) {
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
@@ -3394,8 +3395,6 @@ void NewGVN::iterateTouchedInstructions() {
   NumGVNMaxIterations = std::max(NumGVNMaxIterations.getValue(), Iterations);
 }
 
-static bool loadPRE(Function &);
-
 // This is the main transformation entry point.
 bool NewGVN::runGVN() {
   if (DebugCounter::isCounterSet(VNCounter))
@@ -3463,7 +3462,11 @@ bool NewGVN::runGVN() {
   verifyStoreExpressions();
 
   Changed |= eliminateInstructions(F);
-  Changed |= EnableNewLoadPRE ? loadPRE(F) : Changed;
+
+  if (EnableScalarPRE) {
+    ClearGuard(DT, F.size());
+    Changed |= scalarPRE(F);
+  }
 
   // Delete all instructions marked for deletion.
   for (Instruction *ToErase : InstructionsToErase) {
