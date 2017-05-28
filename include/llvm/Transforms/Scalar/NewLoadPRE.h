@@ -244,13 +244,21 @@ struct ClearGuard {
 };
 
 bool NewGVN::scalarPRE(Function &F) {
+  // Pre-compute set of exit occurrences as it's the same for all cong classes.
+  std::vector<ExitOcc> ExitOccs;
+  for (BasicBlock &BB : F)
+    if (isa<ReturnInst>(BB.getTerminator()) ||
+        isa<UnreachableInst>(BB.getTerminator()))
+      ExitOccs.emplace_back(*DT.getBlock(&BB));
+
   PlaceAndFill IDF(DT, F.size());
   return any_of(CongruenceClasses, [&](CongruenceClass &Cong) {
-    return preClass(F, Cong, ClearGuard(IDF));
+    return preClass(F, Cong, ClearGuard(IDF), ExitOccs);
   });
 }
 
-static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
+static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
+                     ArrayRef<ExitOcc> ExitOccs) {
   if (Cong.size() <= 1)
     // On singleton classes, PRE's sole possible effect is loop-invariant
     // hoisting. But this is already covered by other loop-hoisting passes.
@@ -259,7 +267,7 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   std::vector<RealOcc> RealOccs;
   RealOccs.reserve(Cong.size());
   std::vector<Occurrence *> DPOSorted;
-  DPOSorted.reserve(Cong.size());
+  DPOSorted.reserve(Cong.size() + ExitOccs.size());
 
   // Add a real occurrence for each cong member, an exit occurrence for every
   // exit block, and phi occurrences at IDFs of each real occurrence (these
@@ -267,16 +275,12 @@ static bool preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc) {
   // order in which each would be encountered during a pre-order walk of the dom
   // tree.
 
-  // TODO: This only needs to be done once for all cong classes.
-  std::vector<ExitOcc> ExitOccs;
-  for (BasicBlock &BB : F)
-    if (isa<ReturnInst>(BB.getTerminator()) ||
-        isa<UnreachableInst>(BB.getTerminator())) {
-      ExitOccs.emplace_back(*DT.getBlock(&BB));
-      DPOSorted.push_back(&ExitOccs.back());
-    }
+  // Add exit occurrences.
+  for (ExitOcc &E : ExitOccs)
+    DPOSorted.push_back(&E);
 
-  // TODO: Not all cong members should be pushed.
+  // TODO: Not all cong members should be pushed, such as maybe ones with side
+  // effects that won't be eliminated regardless of redundancy.
   for (Instruction *I : Cong) {
     RealOccs.emplace_back(*DT.getNode(I->getParent()), InstrToDFSNum(I), *I,
                           I == Cong.getLeader());
