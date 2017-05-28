@@ -3464,8 +3464,9 @@ bool NewGVN::runGVN() {
   Changed |= eliminateInstructions(F);
 
   if (EnableScalarPRE) {
-    ClearGuard(DT, F.size());
-    Changed |= scalarPRE(F);
+    PlaceAndFill IDF(DT, F.size());
+    for (CongruenceClass &Cong : CongruenceClasses)
+      Changed |= scalarPRE(F, Cong, ClearGuard(IDF));
   }
 
   // Delete all instructions marked for deletion.
