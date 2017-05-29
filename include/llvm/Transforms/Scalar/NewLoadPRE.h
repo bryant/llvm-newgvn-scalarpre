@@ -15,42 +15,13 @@ struct Occurrence {
   unsigned in() const { return Node->getDFSNumIn(); }
 
   unsigned out() const { return Node->getDFSNumOut(); }
+
+  bool dominates(const Occurrence &Other) const {
+    return in() <= Other.in() && Other.out() <= out();
+  }
 };
 
-struct PhiOcc;
-
-struct RealOcc final : public Occurrence {
-  Occurrence *Def;
-  // ^ Possible values:
-  // - Before renaming:
-  //   - (Def *) -1u means that this may or may not be a new version.
-  //   - nullptr means that this is marked as a new version.
-  // - After renaming:
-  //   - nullptr means a new version and thus not redundant to anything.
-  //   - otherwise, a valid pointer.
-  PointerUnion<Instruction *, StoreInst *> I;
-
-  RealOcc(DomTreeNode &N, unsigned LocalNum, Instruction &I_, bool NewVers)
-      : Occurrence{&N, LocalNum, OccReal},
-        Def(NewVers ? nullptr : reinterpret_cast<Occurrence *>(-1u)) {
-    if (auto *SI = dyn_cast<StoreInst>(&I))
-      I = SI;
-    else
-      I = &I_;
-  }
-
-  void setDef(Occurrence &Occ) {
-    Def = &Occ;
-    if (auto *P = dyn_cast<PhiOcc>(&Occ))
-      P->addUse(*this);
-  }
-
-  bool isNewVersion() const { return Def == nullptr; }
-
-  PointerUnion<Instruction *, StoreInst *> &getInst() { return I; }
-
-  static bool classof(const Occurrence &Occ) { return Occ.Type == OccReal; }
-};
+struct RealOcc;
 
 struct PhiOcc final : public Occurrence {
   struct PhiUse {
@@ -78,13 +49,13 @@ struct PhiOcc final : public Occurrence {
   }
 
   void addOperand(Occurrence &Occ, BasicBlock &Block) {
-    Defs.emplace_back(&Occ, &Block);
+    Defs.push_back({&Occ, &Block});
     // Add ourselves to Occ's uses if it's a PhiOcc.
     if (auto *P = dyn_cast<PhiOcc>(&Occ))
       P->addUse(*this, Defs.size() - 1);
   }
 
-  void addUse(PhiOcc &P, unsigned OpIdx) { PhiUses.emplace_back(&P, OpIdx); }
+  void addUse(PhiOcc &P, unsigned OpIdx) { PhiUses.push_back({&P, OpIdx}); }
 
   void addUse(RealOcc &R) { Uses.emplace_back(&R); }
 
@@ -92,13 +63,51 @@ struct PhiOcc final : public Occurrence {
 
   void resetCanBeAvail() { CanBeAvail = false; }
 
-  static bool classof(const Occurrence &Occ) { return Occ.Type == OccPhi; }
+  static bool classof(Occurrence *Occ) { return Occ->Type == OccPhi; }
+  static bool classof(const Occurrence *Occ) { return Occ->Type == OccPhi; }
+};
+
+struct RealOcc final : public Occurrence {
+  Occurrence *Def;
+  // ^ Possible values:
+  // - Before renaming:
+  //   - (Def *) -1u means that this may or may not be a new version.
+  //   - nullptr means that this is marked as a new version.
+  // - After renaming:
+  //   - nullptr means a new version and thus not redundant to anything.
+  //   - otherwise, a valid pointer.
+  PointerUnion<Instruction *, StoreInst *> I;
+
+  RealOcc(DomTreeNode &N, unsigned LocalNum, Instruction &I_, bool NewVers)
+      : Occurrence{&N, LocalNum, OccReal},
+        Def(NewVers ? nullptr : reinterpret_cast<Occurrence *>(-1u)) {
+    if (auto *SI = dyn_cast<StoreInst>(&I_))
+      I = SI;
+    else
+      I = &I_;
+  }
+
+  void setDef(Occurrence &Occ) {
+    Def = &Occ;
+    if (auto *P = dyn_cast<PhiOcc>(&Occ))
+      P->addUse(*this);
+  }
+
+  bool isNewVersion() const { return Def == nullptr; }
+
+  PointerUnion<Instruction *, StoreInst *> &getInst() { return I; }
+
+  static bool classof(Occurrence *Occ) { return Occ->Type == OccReal; }
+  static bool classof(const Occurrence *Occ) { return Occ->Type == OccReal; }
 };
 
 struct ExitOcc final : public Occurrence {
   // Exit occs live at the bottom of their (exit) blocks; set LocalNum
   // accordingly.
   ExitOcc(DomTreeNode &N) : Occurrence{&N, -1u, OccExit} {}
+
+  static bool classof(Occurrence *Occ) { return Occ->Type == OccExit; }
+  static bool classof(const Occurrence *Occ) { return Occ->Type == OccExit; }
 };
 
 // PiggyBank from Sreedhar and Gao 1994. This structure fulfills the same
@@ -106,6 +115,7 @@ struct ExitOcc final : public Occurrence {
 // constant time per insertion and deletion.
 struct PiggyBank {
   using Node = Occurrence *;
+  using NodeRef = std::pair<unsigned, unsigned>;
 
   std::vector<std::vector<Node>> Banks;
   unsigned CurrentLevel;
@@ -130,10 +140,12 @@ struct PiggyBank {
     return N;
   }
 
-  Node &push(Occurrence &Occ, unsigned Level) {
+  NodeRef push(Occurrence &Occ, unsigned Level) {
     Banks[Level].push_back(&Occ);
-    return Banks[Level].back();
+    return {Level, Banks[Level].size() - 1};
   }
+
+  Node &operator[](NodeRef Ref) { return Banks[Ref.first][Ref.second]; }
 };
 
 // This is essentially ForwardIDFCalculator, with additional functionality that
@@ -144,14 +156,14 @@ struct PlaceAndFill {
   PiggyBank DefQ;
   // ^ Imposes an order on defs so that phis are inserted from highest- to
   // lowest-ranked, thus preventing dom sub-tree re-traversals.
-  DenseMap<DomTreeNode *, unsigned> Levels;
+  DenseMap<const DomTreeNode *, unsigned> Levels;
   // ^ Maps eeach basic block to its depth in the dom tree.
-  DenseMap<const BasicBlock *, PiggyBank::Node *> Defs;
+  DenseMap<const BasicBlock *, PiggyBank::NodeRef> Defs;
   DenseSet<const DomTreeNode *> Visited;
   std::vector<DomTreeNode *> SubtreeStack;
   // ^ Stack for visiting def node subtrees in pre-order.
 
-  PlaceAndFill(const DominatorTree &DT, unsigned NumBlocks) : DT(DT) {
+  PlaceAndFill(const DominatorTree &DT, unsigned NumBlocks) : DT(DT), DefQ(0) {
     // Prevent re-allocs.
     Levels.reserve(NumBlocks);
     Defs.reserve(NumBlocks);
@@ -161,7 +173,7 @@ struct PlaceAndFill {
     unsigned Height = 0;
     for (auto DFI = df_begin(DT.getRootNode()); DFI != df_end(DT.getRootNode());
          ++DFI) {
-      DomLevels[*DFI] = DFI.getPathLength();
+      Levels[*DFI] = DFI.getPathLength();
       Height = std::max(Height, DFI.getPathLength());
     }
 
@@ -171,13 +183,13 @@ struct PlaceAndFill {
   void addDef(RealOcc &Occ) {
     // If there are multiple definitions in a block, keepy only the latest
     // because that is the one exposed to phis on the block's DF.
-    auto InsPair = Defs.insert({Occ.getBlock(), nullptr});
+    auto InsPair = Defs.insert({&Occ.getBlock(), {0, 0}});
     if (InsPair.second)
-      // First encounter with this block. Push it into the PiggyBank.
-      *InsPair.first = DefQ.push(Occ, *Levels.find(Occ.getBlock()));
-    else if ((*InsPair.first)->LocalNum < Occ.LocalNum)
+      // First def of this block. Push it into the PiggyBank.
+      InsPair.first->second = DefQ.push(Occ, Levels.find(Occ.Node)->second);
+    else if (DefQ[InsPair.first->second]->LocalNum < Occ.LocalNum)
       // Occ is later in the block than the previously inserted def.
-      *InsPair.first = &Occ;
+      DefQ[InsPair.first->second] = &Occ;
   }
 
   using PhiMap = DenseMap<const BasicBlock *, PhiOcc>;
@@ -185,25 +197,25 @@ struct PlaceAndFill {
   PhiMap calculate() {
     PhiMap Phis;
     while (!DefQ.empty())
-      visitSubtree(CurDef.pop(), CurDef.CurrentLevel, Phis);
+      visitSubtree(DefQ.pop(), DefQ.CurrentLevel, Phis);
     return Phis;
   }
 
   void clear() {
     assert(DefQ.empty() &&
            "All defs should have been popped after calculate().");
-    Defs.clear(NumBlocks);
-    Visited.clear(NumBlocks);
+    Defs.clear();
+    Visited.clear();
   }
 
 private:
   // Search CurDef's dom subtree for J-edges. CurDef's DF is exactly the set of
   // targets of all J-edges whose shadow contains CurDef.
-  void visitSubtree(const PiggyBank::Node &CurDef, unsigned CurDefLevel,
+  void visitSubtree(PiggyBank::Node CurDef, unsigned CurDefLevel,
                     PhiMap &Phis) {
     assert(SubtreeStack.empty());
-    SubtreeStack.push_back(&CurDef);
-    Visited.insert(&CurDef);
+    SubtreeStack.push_back(CurDef->Node);
+    Visited.insert(CurDef->Node);
 
     while (!SubtreeStack.empty()) {
       DomTreeNode &SubNode = *SubtreeStack.back();
@@ -212,7 +224,7 @@ private:
         unsigned SuccLevel;
 
         // Skip if it's a dom tree edge (not a J-edge).
-        if (SuccNode->getIDom() == SubNode &&
+        if (SuccNode.getIDom() == &SubNode &&
             (SuccLevel = Levels.find(&SuccNode)->second) > CurDefLevel)
           continue;
 
@@ -249,9 +261,19 @@ struct ClearGuard {
   auto calculate() -> decltype(Inner.calculate()) { return Inner.calculate(); }
 };
 
+template <typename Entry, size_t N> struct DPOStack {
+  SmallVector<Entry *, N> Inner;
+  void popUntilDFSScope(Entry &E) {
+    while (!Inner.empty() && !Inner.back()->dominates(E))
+      Inner.pop_back();
+  }
+  void push(Entry &E) { Inner.push_back(&E); }
+  Entry *top() { return Inner.empty() ? nullptr : Inner.back(); }
+};
+
 bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
                       std::vector<Occurrence *> ExitOccs) {
-  const DominatorTree &DT = *DT;
+  // const DominatorTree &DT = *DT;
 
   if (Cong.size() <= 1)
     // On singleton classes, PRE's sole possible effect is loop-invariant
@@ -273,7 +295,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // effects that won't be eliminated regardless of redundancy.
   for (Value *V : Cong) {
     Instruction *I = cast<Instruction>(V);
-    RealOccs.emplace_back(*DT.getNode(I->getParent()), InstrToDFSNum(I), *I,
+    RealOccs.emplace_back(*DT->getNode(I->getParent()), InstrToDFSNum(I), *I,
                           I == Cong.getLeader());
     DPOSorted.push_back(&RealOccs.back());
     IDFCalc.addDef(RealOccs.back());
@@ -282,11 +304,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // Phi occurrences are given operands as they are placed.
   DenseMap<const BasicBlock *, PhiOcc> Phis = IDFCalc.calculate();
   std::vector<PhiOcc> PhiOccs;
-  PhiOcc.reserve(Phis.size());
+  PhiOccs.reserve(Phis.size());
   DPOSorted.reserve(DPOSorted.size() + Phis.size());
   for (auto &P : Phis) {
     DPOSorted.push_back(&P.second);
-    P
   }
 
   std::sort(DPOSorted.begin(), DPOSorted.end(), [](const Occurrence *A,
@@ -297,11 +318,11 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
 
   // Link uses to defs and eliminate full redundancies wherever possible. This
   // is just sparsified SSA renaming.
-  DPOStack Stack;
+  DPOStack<Occurrence, 32> Stack;
   SmallVector<RealOcc *, 32> ProbablyDead;
   for (Occurrence *Occ : DPOSorted) {
     assert(Occ);
-    Stack.popUntilDFSScope(*Occ->Node);
+    Stack.popUntilDFSScope(*Occ);
 
     // TODO: Re-order this from most to least likely.
     //
@@ -330,10 +351,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         if (R->isNewVersion())
           PDom->resetDownSafe();
         else
-          R->setDef(PDom);
-        Stack.push(R);
+          R->setDef(*PDom);
+        Stack.push(*R);
       } else if (auto *P = dyn_cast<PhiOcc>(Occ)) {
-        Stack.push(P);
+        Stack.push(*P);
       } else if (auto *Ex = dyn_cast<ExitOcc>(Occ)) {
         // PDom is directly exposed to an exit and therefore down-unsafe.
         PDom->resetDownSafe();
@@ -352,12 +373,12 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         // RDom's. Don't bother pushing onto the renaming stack because it's
         // probably dead if it has no side effects, but do set its def because
         // its phi operands uses need to be updated to RDom (later).
-        R->setDef(RDom);
+        R->setDef(*RDom);
         // R->replaceWith(*RDom);
 
         // Mark its deadness. Quickly short-circuit if a store (which trivially
         // has side effects).
-        if (!R->getInst().is<StoreInst>())
+        if (!R->getInst().is<StoreInst *>())
           ProbablyDead.push_back(R);
       } else if (auto *P = dyn_cast<PhiOcc>(Occ)) {
         // This phi is fully redundant to RDom and should not have been placed.
@@ -376,14 +397,14 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // predecessors are unavailable.
   for (PhiOcc &Phi : PhiOccs) {
     for (PhiOcc::Operand &Op : Phi.Defs)
-      if (auto *R = dyn_cast(Op.Occ))
+      if (auto *R = dyn_cast<RealOcc>(Op.Occ))
         Op.Occ = R->Def ? R->Def : Op.Occ;
 
     // Fill in unavailable predecessors. TODO: This is quadratic in the number
     // of predecessors per phi.
-    for (BasicBlock *Pred : predecessors(Phi.getBlock())) {
+    for (BasicBlock *Pred : predecessors(&Phi.getBlock())) {
       using Op = PhiOcc::Operand;
-      if (find_if(Phi.Defs, [](const Op &O) { return O.Pred == Pred; }) ==
+      if (find_if(Phi.Defs, [&](const Op &O) { return O.Pred == Pred; }) ==
           Phi.Defs.end())
         Phi.Unavail.push_back(Pred);
     }
@@ -393,7 +414,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   SmallVector<PhiOcc *, 32> PhiStack;
   for (PhiOcc &Phi : PhiOccs) {
     if (!Phi.DownSafe) {
-      for (PhiOcc::Operand &Op : P->Defs)
+      for (PhiOcc::Operand &Op : Phi.Defs)
         if (auto *PhiDef = dyn_cast<PhiOcc>(Op.Occ))
           if (PhiDef->DownSafe)
             PhiStack.push_back(PhiDef);
@@ -403,7 +424,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         P->resetDownSafe();
         PhiStack.pop_back();
 
-        for (PhiOcc::Operand &Op : P->Defs)
+        for (PhiOcc::Operand &Op : Phi.Defs)
           if (auto *PhiDef = dyn_cast<PhiOcc>(Op.Occ))
             if (PhiDef->DownSafe)
               PhiStack.push_back(PhiDef);
@@ -415,9 +436,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
     assert(Phi.CanBeAvail && "Initial CanBeAvail should be true.");
     if ((!Phi.DownSafe && !Phi.Unavail.empty()) ||
         any_of(Phi.Unavail, [&](const BasicBlock *B) {
-          return cantPREInsert(*B) || (needsSplit(*B) && cantSplit(*B));
+          // return cantPREInsert(*B) || (needsSplit(*B) && cantSplit(*B));
+          return false;
         })) {
-      for (PhiOcc::PhiUse &Use : P->PhiUses)
+      for (PhiOcc::PhiUse &Use : Phi.PhiUses)
         PhiStack.push_back(Use.User);
 
       while (!PhiStack.empty()) {
@@ -425,12 +447,15 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         P->resetCanBeAvail();
         PhiStack.pop_back();
 
-        for (PhiOcc::PhiUse &Use : P->PhiUses) {
+        for (PhiOcc::PhiUse &Use : Phi.PhiUses) {
           PhiOcc *User = Use.User;
           if (User->CanBeAvail &&
-              (!User.DownSafe || any_of(User.Unavail, [&](const BasicBlock *B) {
-                return cantPREInsert(*B) || (needsSplit(*B) && cantSplit(*B));
-              })))
+              (!User->DownSafe ||
+               any_of(User->Unavail, [&](const BasicBlock *B) {
+                 // return cantPREInsert(*B) || (needsSplit(*B) &&
+                 // cantSplit(*B));
+                 return false;
+               })))
             PhiStack.push_back(User);
         }
       }
@@ -440,6 +465,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // At this point, CanBeAvail will be true for a phi iff it's fully available
   // (empty Unavail) or partially available (non-empty Unavail) but down-safe
   // insertions can be made.
+  return false;
 }
 
 bool NewGVN::scalarPRE(Function &F) {
@@ -454,8 +480,8 @@ bool NewGVN::scalarPRE(Function &F) {
     }
 
   PlaceAndFill IDF(*DT, F.size());
-  return any_of(CongruenceClasses, [&](CongruenceClass &Cong) {
-    return preClass(F, Cong, ClearGuard(IDF), Ptrs, *DT);
+  return any_of(CongruenceClasses, [&](CongruenceClass *Cong) {
+    return preClass(F, *Cong, ClearGuard(IDF), Ptrs);
   });
 }
 }
