@@ -473,7 +473,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
 
 bool NewGVN::scalarPRE(Function &F) {
   // Pre-compute set of exit occurrences as it's the same for all cong classes.
-  std::vector<ExitOcc> ExitOccs;
+  std::list<ExitOcc> ExitOccs;
   std::vector<Occurrence *> Ptrs;
   for (BasicBlock &BB : F)
     if (isa<ReturnInst>(BB.getTerminator()) ||
