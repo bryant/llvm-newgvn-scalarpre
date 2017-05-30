@@ -246,6 +246,8 @@ private:
       for (DomTreeNode *Child : SubNode)
         if (Visited.insert(Child).second)
           SubtreeStack.push_back(Child);
+
+      SubtreeStack.pop_back();
     }
   }
 };
