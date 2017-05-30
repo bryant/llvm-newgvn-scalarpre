@@ -124,7 +124,7 @@ struct PiggyBank {
   unsigned CurrentLevel;
 
   PiggyBank(unsigned TreeHeight)
-      : Banks(TreeHeight), CurrentLevel(TreeHeight) {}
+      : Banks(TreeHeight), CurrentLevel(TreeHeight - 1) {}
 
   bool empty() {
     for (; CurrentLevel > 0; CurrentLevel -= 1)
