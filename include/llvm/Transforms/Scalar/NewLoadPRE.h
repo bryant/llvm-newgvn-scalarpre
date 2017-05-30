@@ -8,7 +8,7 @@ enum OccType {
 struct Occurrence {
   DomTreeNode *Node;
   unsigned LocalNum;
-  OccType Type;
+  const OccType Type;
 
   BasicBlock &getBlock() const { return *Node->getBlock(); }
 
