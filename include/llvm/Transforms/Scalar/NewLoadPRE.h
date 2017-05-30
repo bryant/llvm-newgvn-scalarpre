@@ -127,8 +127,6 @@ struct PiggyBank {
       : Banks(TreeHeight), CurrentLevel(TreeHeight) {}
 
   bool empty() {
-    if (!Banks[CurrentLevel].empty())
-      return false;
     for (; CurrentLevel > 0; CurrentLevel -= 1)
       if (!Banks[CurrentLevel].empty())
         return false;
