@@ -174,7 +174,7 @@ struct PlaceAndFill {
     unsigned Height = 0;
     for (auto DFI = df_begin(DT.getRootNode()); DFI != df_end(DT.getRootNode());
          ++DFI) {
-      Levels[*DFI] = DFI.getPathLength();
+      Levels[*DFI] = DFI.getPathLength() - 1;
       Height = std::max(Height, DFI.getPathLength());
     }
 
