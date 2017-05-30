@@ -478,8 +478,10 @@ bool NewGVN::scalarPRE(Function &F) {
   for (BasicBlock &BB : F)
     if (isa<ReturnInst>(BB.getTerminator()) ||
         isa<UnreachableInst>(BB.getTerminator())) {
-      ExitOccs.emplace_back(*DT->getNode(&BB));
-      Ptrs.push_back(&ExitOccs.back());
+      if (DomTreeNode *Node = DT->getNode(&BB)) {
+        ExitOccs.emplace_back(*Node);
+        Ptrs.push_back(&ExitOccs.back());
+      }
     }
 
   PlaceAndFill IDF(*DT, F.size());
