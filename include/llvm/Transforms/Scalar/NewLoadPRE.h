@@ -10,6 +10,9 @@ struct Occurrence {
   unsigned LocalNum;
   const OccType Type;
 
+  Occurrence(DomTreeNode *Node, unsigned LocalNum, OccType Type)
+      : Node(Node), LocalNum(LocalNum), Type(Type) {}
+
   BasicBlock &getBlock() const { return *Node->getBlock(); }
 
   unsigned in() const { return Node->getDFSNumIn(); }
