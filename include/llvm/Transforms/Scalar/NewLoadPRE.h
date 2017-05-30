@@ -225,7 +225,7 @@ private:
         unsigned SuccLevel;
 
         // Skip if it's a dom tree edge (not a J-edge).
-        if (SuccNode.getIDom() == &SubNode &&
+        if (SuccNode.getIDom() == &SubNode ||
             (SuccLevel = Levels.find(&SuccNode)->second) > CurDefLevel)
           continue;
 
