@@ -66,6 +66,11 @@ struct PhiOcc final : public Occurrence {
 
   void resetCanBeAvail() { CanBeAvail = false; }
 
+  raw_ostream &print(raw_ostream &Out) const {
+    Out << "PhiOcc @ " << getBlock().getName();
+    return Out;
+  }
+
   static bool classof(Occurrence *Occ) { return Occ->Type == OccPhi; }
   static bool classof(const Occurrence *Occ) { return Occ->Type == OccPhi; }
 };
@@ -100,6 +105,16 @@ struct RealOcc final : public Occurrence {
 
   PointerUnion<Instruction *, StoreInst *> &getInst() { return I; }
 
+  raw_ostream &print(raw_ostream &Out) const {
+    if (auto *II = I.dyn_cast<Instruction *>())
+      Out << "RealOcc @ "
+          << ": " << *II;
+    else if (auto *II = I.dyn_cast<StoreInst *>())
+      Out << "RealOcc @ "
+          << ": " << *II;
+    return Out;
+  }
+
   static bool classof(Occurrence *Occ) { return Occ->Type == OccReal; }
   static bool classof(const Occurrence *Occ) { return Occ->Type == OccReal; }
 };
@@ -108,6 +123,11 @@ struct ExitOcc final : public Occurrence {
   // Exit occs live at the bottom of their (exit) blocks; set LocalNum
   // accordingly.
   ExitOcc(DomTreeNode &N) : Occurrence{&N, -1u, OccExit} {}
+
+  raw_ostream &print(raw_ostream &Out) const {
+    Out << "ExitOcc @ bottom of " << getBlock().getName();
+    return Out;
+  }
 
   static bool classof(Occurrence *Occ) { return Occ->Type == OccExit; }
   static bool classof(const Occurrence *Occ) { return Occ->Type == OccExit; }
@@ -273,6 +293,17 @@ template <typename Entry, size_t N> struct DPOStack {
   void push(Entry &E) { Inner.push_back(&E); }
   Entry *top() { return Inner.empty() ? nullptr : Inner.back(); }
 };
+
+raw_ostream &operator<<(raw_ostream &O, const Occurrence &Occ) {
+  if (auto *R = dyn_cast<RealOcc>(&Occ))
+    return R->print(O);
+  else if (auto *P = dyn_cast<PhiOcc>(&Occ))
+    return P->print(O);
+  else if (auto *E = dyn_cast<ExitOcc>(&Occ))
+    return E->print(O);
+  else
+    llvm_unreachable("Invalid occurrence type.");
+}
 
 bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
                       std::vector<Occurrence *> ExitOccs) {
