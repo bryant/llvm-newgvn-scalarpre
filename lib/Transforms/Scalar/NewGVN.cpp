@@ -51,6 +51,7 @@
 /// trying to eliminate things that have unique value numbers.
 //
 //===----------------------------------------------------------------------===//
+#include "llvm/Transforms/Scalar/NewPRE.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
@@ -153,6 +154,9 @@ static cl::opt<bool> EnableStoreRefinement("enable-store-refinement",
 /// Currently, the generation "phi of ops" can result in correctness issues.
 static cl::opt<bool> EnablePhiOfOps("enable-phi-of-ops", cl::init(true),
                                     cl::Hidden);
+
+static cl::opt<bool> EnableScalarPRE("enable-scalar-pre", cl::init(true),
+                                     cl::Hidden);
 
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
@@ -326,6 +330,11 @@ public:
   void setStoredValue(Value *Leader) { RepStoredValue = Leader; }
   const MemoryAccess *getMemoryLeader() const { return RepMemoryAccess; }
   void setMemoryLeader(const MemoryAccess *Leader) { RepMemoryAccess = Leader; }
+
+  Type *getType() const {
+    return getStoredValue() ? getStoredValue()->getType()
+                            : getLeader()->getType();
+  }
 
   // Forward propagation info
   const Expression *getDefiningExpr() const { return DefiningExpr; }
@@ -789,6 +798,7 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
+  bool insertFullyAvailPhis(CongruenceClass &, idf::ClearGuard);
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
@@ -3838,6 +3848,152 @@ Value *NewGVN::findPHIOfOpsLeader(const Expression *E,
   return nullptr;
 }
 
+raw_ostream &operator<<(raw_ostream &O, const occ::Occurrence &Occ) {
+  using namespace occ;
+  if (auto *R = dyn_cast<RealOcc>(&Occ))
+    return R->print(O);
+  else if (auto *P = dyn_cast<PhiOcc>(&Occ))
+    return P->print(O);
+  else if (auto *E = dyn_cast<ExitOcc>(&Occ))
+    return E->print(O);
+  else
+    llvm_unreachable("Invalid occurrence type.");
+}
+
+namespace occ {
+void PhiOcc::verify(const DominatorTree &DT) const {
+  DEBUG(dbgs() << "Verifying " << *this << "\n");
+  for (const PhiOcc::Operand &Op : Defs) {
+    DEBUG(dbgs() << "\tDef(" << Op.Pred->getName() << "): " << *Op.Occ << " "
+                 << "\n");
+    assert(Op.Pred);
+    assert(Op.Occ && "Expected an operand.");
+    assert(DT.dominates(Op.Occ->Node, DT.getNode(Op.Pred)));
+    assert(Op.Occ->Node == Node || !DT.dominates(Op.Occ->Node, Node));
+  }
+}
+} // namespace occ
+
+// A PhiOcc is fully avail iff each of its operands are dominated by a cong
+// class member (a RealOcc) or a fully avail PhiOcc. The inverse of this is that
+// at least one operand is un-dominated by either of those (a _|_ operand in
+// SSAPRE parlance), or dominated by a phi that is known to be non-fully avail.
+template <typename PhiContainer> void computeFullyAvail(PhiContainer &&Phis) {
+  using namespace occ;
+  SmallVector<PhiOcc *, 32> Stack;
+  auto pushUses = [&](PhiOcc &Phi) {
+    // dbgs() << "push uses of " << &Phi << "\n";
+    Phi.FullyAvail = false;
+    for (PhiOcc::PhiUse &Use : Phi.PhiUses) {
+      // dbgs() << "use: " << Use.User << "\n";
+      // assert(Use.User && "omfg.");
+      // dbgs() << "FullyAvail: " << Use.User->FullyAvail << "\n";
+      if (Use.User->FullyAvail)
+        Stack.push_back(Use.User);
+    }
+  };
+
+  for (PhiOcc &Phi : Phis) {
+    const BasicBlock *BB = &Phi.getBlock();
+    // Will at least one of Phi's operands be _|_?
+    if (Phi.FullyAvail &&
+        Phi.Defs.size() < size_t(std::distance(pred_begin(BB), pred_end(BB)))) {
+      // Yes, so this phi and its direct users will themselves be non-fully
+      // avail. Propagate false by DFS.
+      pushUses(Phi);
+      while (!Stack.empty())
+        pushUses(*Stack.pop_back_val());
+    }
+  }
+}
+
+// Figure out where we can PRE. For the (join) points where we can, insert
+// missing copies of Cong's leader and a fully available PHINode.
+__attribute__((noinline)) bool
+NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
+  using namespace occ;
+  // Skip singleton classes because PRE's sole effect would be loop invariant
+  // hoisting and there already exists a separate pass to do this.
+  if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
+      !isa<BasicExpression>(Cong.getDefiningExpr()))
+    return false;
+
+  DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
+               << " leader " << *Cong.getLeader() << "\n");
+
+  // Place possible phi markers at DF+ of all Cong members. As they are placed,
+  // each marker will be filled phi operands.
+  std::vector<RealOcc> RealOccs;
+  RealOccs.reserve(Cong.size());
+
+  for (Value *V : Cong) {
+    if (auto *PN = dyn_cast<PHINode>(V)) {
+      DEBUG(dbgs() << "Adding existing phi node " << *PN << "\n");
+      // PN is an existing phi node in the congruence class. Wrap it in a PhiOcc
+      // and toss it in with the other phis. PlaceAndFill will fill this PhiOcc
+      // with Occurrence operands that correspond to the PHINode's.
+      auto InsPair =
+          IDFCalc.addPhiOcc(PhiOcc(*PN, *DT->getNode(PN->getParent())));
+      IDFCalc.addDef(*InsPair.first);
+    } else {
+      Instruction *I = cast<Instruction>(V);
+      DEBUG(dbgs() << "Adding real def " << *I << "\n");
+      RealOccs.emplace_back(*DT->getNode(I->getParent()), InstrToDFSNum(I), *I,
+                            I == Cong.getLeader());
+      IDFCalc.addDef(RealOccs.back());
+    }
+  }
+
+  IDFCalc.calculate();
+
+  // Verify that PlaceAndFill did its job correctly.
+  for (PhiOcc &Phi : IDFCalc.getPhis())
+    Phi.verify(*DT);
+
+  computeFullyAvail(IDFCalc.getPhis());
+
+  // Materialize fully available PhiOccs into PHINodes and add into the
+  // congruence class. Note that BasicExpression's type may not be the cong.
+  // class type (see NewGVN::setBasicExpressionInfo).
+  for (PhiOcc &Phi : IDFCalc.getPhis()) {
+    DEBUG(dbgs() << "analyzing phi " << Phi << "\n");
+    if (Phi.FullyAvail && !Phi.P) {
+      Phi.P = IRBuilder<>(&Phi.getBlock(), Phi.getBlock().begin())
+                  .CreatePHI(Cong.getType(), Phi.Defs.size());
+      DEBUG(dbgs() << "inserting new phi of type " << *Phi.P->getType()
+                   << " to " << Phi.getBlock().getName() << "\n");
+      Cong.insert(Phi.P);
+    }
+  }
+
+  // Set incoming values of materialized PHINodes.
+  for (PhiOcc &Phi : IDFCalc.getPhis()) {
+    DEBUG(dbgs() << Phi << "\n");
+    // Could be a phi already existing in Cong. Those would already have
+    // incoming values. Skip.
+    if (Phi.FullyAvail && Phi.P->getNumIncomingValues() == 0) {
+      for (const PhiOcc::Operand &Op : Phi.Defs) {
+        DEBUG(dbgs() << Op << "\n");
+        if (RealOcc *R = dyn_cast<RealOcc>(Op.Occ)) {
+          if (StoreInst *SI = R->getInst().dyn_cast<StoreInst *>())
+            Phi.P->addIncoming(SI->getValueOperand(), Op.Pred);
+          else {
+            DEBUG(dbgs() << "addIncoming "
+                         << *R->getInst().dyn_cast<Instruction *>() << " to "
+                         << *Phi.P << "\n");
+            Phi.P->addIncoming(R->getInst().dyn_cast<Instruction *>(), Op.Pred);
+          }
+        } else
+          Phi.P->addIncoming(cast<PhiOcc>(Op.Occ)->P, Op.Pred);
+      }
+    }
+  }
+
+  DEBUG(dbgs() << "after insertFullyAvailPhis for " << *Cong.getLeader()
+               << ":\n");
+  DEBUG(F.print(dbgs()));
+  return true;
+}
 bool NewGVN::eliminateInstructions(Function &F) {
   // This is a non-standard eliminator. The normal way to eliminate is
   // to walk the dominator tree in order, keeping track of available
@@ -3902,6 +4058,18 @@ bool NewGVN::eliminateInstructions(Function &F) {
       if (ReachablePredCount.lookup(BB) != PHI->getNumIncomingValues())
         ReplaceUnreachablePHIArgs(PHI, BB);
     }
+  }
+
+  // Perform PRE insertions if requested. Redundant instructions will dominated
+  // by fully available phi nodes in the same congruence class and thus
+  // eliminated later.
+  if (EnableScalarPRE) {
+    idf::PlaceAndFill IDF(*DT);
+
+    // PRE order matters. If definingExpr(B) uses definingExpr(A) for cong.
+    // classes A and B, then we need to PRE A before B.
+    for (CongruenceClass *CC : CongruenceClasses)
+      insertFullyAvailPhis(*CC, IDF);
   }
 
   // Map to store the use counts
