@@ -119,6 +119,8 @@ struct RealOcc final : public Occurrence {
   static bool classof(const Occurrence *Occ) { return Occ->Type == OccReal; }
 };
 
+// Exit occurrences live at bottom of exit blocks. A phi is down-unsafe if it
+// has a CFG path to an ExitOcc that doesn't cross a real Occurrence.
 struct ExitOcc final : public Occurrence {
   // Exit occs live at the bottom of their (exit) blocks; set LocalNum
   // accordingly.
@@ -387,6 +389,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
 
   std::vector<RealOcc> RealOccs;
   RealOccs.reserve(Cong.size());
+  // ^ Important: RealOccs must not and should not reallocate.
   std::vector<Occurrence *> &DPOSorted = ExitOccs;
   DPOSorted.reserve(Cong.size() + ExitOccs.size());
 
@@ -443,12 +446,12 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
     //
     // [1]: Not possible for a congruence leader to be dominated by another
     // class member.
-    // [2]: Exit occurrences have no effect on dominating real occurrences.
+    // [2]: Exit occurrences have no effect when exposed to real occurrences.
 
     // Check the occurrence type of the top of stack.
     if (!Stack.top()) {
-      // Exit occs are never poushed because they always live at the lowest
-      // levels of the dominator tree and dominate nothing.
+      // Nothing dominates Occ, so the only thing left is to push it onto the
+      // stack. Exit occs are never pushed because exit blocks dominate nothing.
       if (!isa<ExitOcc>(Occ))
         Stack.push(*Occ);
 
@@ -475,10 +478,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
                                      "congruence class leader with the lowest "
                                      "DPO number, yet it's somehow dominated "
                                      "by another member.");
-        // R's cong member is fully dommed by and thus fully redundant to
-        // RDom's. Don't bother pushing onto the renaming stack because it's
-        // probably dead if it has no side effects, but do set its def because
-        // its phi operands uses need to be updated to RDom (later).
+        // R is fully redundant to RDom. Don't bother pushing onto the renaming
+        // stack because it's probably dead if it has no side effects, but do
+        // set its def because its phi operand uses need to be updated to RDom
+        // (later).
         R->setDef(*RDom);
 
         // Mark its deadness. Quickly short-circuit if a store (which trivially
@@ -488,8 +491,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
       } else if (auto *P = dyn_cast<PhiOcc>(Occ)) {
         // This phi is fully redundant to RDom and should not have been placed.
         // TODO: Unnecessary phis are placed when P is in the DF of some R
-        // dominated by RDom and could thus be prevented with an initial FRE
-        // pass before phi placement.
+        // dominated by RDom. We could prevent this by running FRE before PRE.
         // P->replaceWith(*RDom);
       } else if (auto *Ex = dyn_cast<ExitOcc>(Occ)) {
         // Exposure to exit has no effect on real occurrences.
