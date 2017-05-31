@@ -66,6 +66,8 @@ struct PhiOcc final : public Occurrence {
 
   void resetCanBeAvail() { CanBeAvail = false; }
 
+  void verify(const DominatorTree &DT) const;
+
   raw_ostream &print(raw_ostream &Out) const {
     Out << "PhiOcc @ " << getBlock().getName();
     return Out;
@@ -303,6 +305,16 @@ raw_ostream &operator<<(raw_ostream &O, const Occurrence &Occ) {
     llvm_unreachable("Invalid occurrence type.");
 }
 
+void PhiOcc::verify(const DominatorTree &DT) const {
+  DEBUG(dbgs() << "Verifying " << *this << "\n");
+  for (const PhiOcc::Operand &Op : Defs) {
+    assert(Op.Pred);
+    assert(Op.Occ && "Expected an operand.");
+    assert(DT.dominates(Op.Occ->Node, DT.getNode(Op.Pred)));
+    assert(Op.Occ->Node == Node || !DT.dominates(Op.Occ->Node, Node));
+  }
+}
+
 bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
                       std::vector<Occurrence *> ExitOccs) {
   // const DominatorTree &DT = *DT;
@@ -339,6 +351,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   DenseMap<const BasicBlock *, PhiOcc> Phis = IDFCalc.calculate();
   DPOSorted.reserve(DPOSorted.size() + Phis.size());
   for (auto &P : Phis) {
+    P.second.verify(*DT);
     DPOSorted.push_back(&P.second);
   }
 
@@ -428,10 +441,6 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   // predecessors are unavailable.
   for (auto &Pair : Phis) {
     PhiOcc &Phi = Pair.second;
-    for (PhiOcc::Operand &Op : Phi.Defs)
-      if (auto *R = dyn_cast<RealOcc>(Op.Occ))
-        Op.Occ = R->getDef() ? R->getDef() : Op.Occ;
-
     // Fill in unavailable predecessors. TODO: This is quadratic in the number
     // of predecessors per phi.
     for (BasicBlock *Pred : predecessors(&Phi.getBlock())) {
@@ -440,6 +449,13 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
           Phi.Defs.end())
         Phi.Unavail.push_back(Pred);
     }
+
+    Phi.verify(*DT);
+
+    // TODO: This could be done later.
+    for (PhiOcc::Operand &Op : Phi.Defs)
+      if (auto *R = dyn_cast<RealOcc>(Op.Occ))
+        Op.Occ = R->getDef() ? R->getDef() : Op.Occ;
   }
 
   // Run availability and anticipability analysis on phis.
