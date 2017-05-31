@@ -315,6 +315,67 @@ void PhiOcc::verify(const DominatorTree &DT) const {
   }
 }
 
+// Depth-first propagation of false DownSafe from phi occs to their phi defs.
+void propagateDownUnsafe(std::vector<PhiOcc *> &PhiStack,
+                         DenseMap<const BasicBlock *, PhiOcc> &Phis) {
+  auto pushPhiDefsOf = [&](PhiOcc &P) {
+    for (PhiOcc::Operand &Op : P.Defs)
+      if (auto *PhiDef = dyn_cast<PhiOcc>(Op.Occ))
+        if (PhiDef->DownSafe)
+          PhiStack.push_back(PhiDef);
+  };
+
+  for (auto &Pair : Phis) {
+    PhiOcc &Phi = Pair.second;
+    if (!Phi.DownSafe) {
+      pushPhiDefsOf(Phi);
+      while (!PhiStack.empty()) {
+        PhiOcc *P = PhiStack.back();
+        PhiStack.pop_back();
+        P->resetDownSafe();
+        pushPhiDefsOf(*P);
+      }
+    }
+  }
+}
+
+// Depth-first propagation of false CanBeAvail from phi occs to their phi users.
+void propagateCantBeAvail(std::vector<PhiOcc *> &PhiStack,
+                          DenseMap<const BasicBlock *, PhiOcc> &Phis) {
+  auto resetAndPushUses = [&](PhiOcc &P) {
+    P.resetCanBeAvail();
+    for (PhiOcc::PhiUse &Use : P.PhiUses)
+      if (Use.User->CanBeAvail && !Use.User->DownSafe)
+        PhiStack.push_back(Use.User);
+  };
+
+  // If PRE insertion is required by one of a phi's operands, then the
+  // corresponding predecessor edge has to be split if critical. And if the edge
+  // is critical but can't be split, then insertion isn't possible and renders
+  // the phi !CanBeAvail.
+  auto critEdgeIssues = [](const PhiOcc &P) {
+    return any_of(P.Unavail, [&](const BasicBlock *B) {
+      // TODO: do this.
+      // return cantPREInsert(*B) || (needsSplit(*B) && cantSplit(*B));
+      return false;
+    });
+  };
+
+  for (auto &Pair : Phis) {
+    PhiOcc &Phi = Pair.second;
+    if (Phi.CanBeAvail &&
+        (!Phi.DownSafe && !Phi.Unavail.empty() || critEdgeIssues(Phi))) {
+      resetAndPushUses(Phi);
+
+      while (!PhiStack.empty()) {
+        PhiOcc *P = PhiStack.back();
+        PhiStack.pop_back();
+        resetAndPushUses(*P);
+      }
+    }
+  }
+}
+
 bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
                       std::vector<Occurrence *> ExitOccs) {
   // const DominatorTree &DT = *DT;
@@ -459,57 +520,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   }
 
   // Run availability and anticipability analysis on phis.
-  SmallVector<PhiOcc *, 32> PhiStack;
-  for (PhiOcc &Phi : PhiOccs) {
-    if (!Phi.DownSafe) {
-      for (PhiOcc::Operand &Op : Phi.Defs)
-        if (auto *PhiDef = dyn_cast<PhiOcc>(Op.Occ))
-          if (PhiDef->DownSafe)
-            PhiStack.push_back(PhiDef);
-
-      while (!PhiStack.empty()) {
-        PhiOcc *P = PhiStack.back();
-        P->resetDownSafe();
-        PhiStack.pop_back();
-
-        for (PhiOcc::Operand &Op : Phi.Defs)
-          if (auto *PhiDef = dyn_cast<PhiOcc>(Op.Occ))
-            if (PhiDef->DownSafe)
-              PhiStack.push_back(PhiDef);
-      }
-    }
-  }
-
-  for (auto &Pair : Phis) {
-    PhiOcc &Phi = Pair.second;
-    assert(Phi.CanBeAvail && "Initial CanBeAvail should be true.");
-    if ((!Phi.DownSafe && !Phi.Unavail.empty()) ||
-        any_of(Phi.Unavail, [&](const BasicBlock *B) {
-          // return cantPREInsert(*B) || (needsSplit(*B) && cantSplit(*B));
-          return false;
-        })) {
-      for (PhiOcc::PhiUse &Use : Phi.PhiUses)
-        PhiStack.push_back(Use.User);
-
-      while (!PhiStack.empty()) {
-        PhiOcc *P = PhiStack.back();
-        P->resetCanBeAvail();
-        PhiStack.pop_back();
-
-        for (PhiOcc::PhiUse &Use : Phi.PhiUses) {
-          PhiOcc *User = Use.User;
-          if (User->CanBeAvail &&
-              (!User->DownSafe ||
-               any_of(User->Unavail, [&](const BasicBlock *B) {
-                 // return cantPREInsert(*B) || (needsSplit(*B) &&
-                 // cantSplit(*B));
-                 return false;
-               })))
-            PhiStack.push_back(User);
-        }
-      }
-    }
-  }
+  std::vector<PhiOcc *> PhiStack;
+  PhiStack.reserve(Phis.size());
+  propagateDownUnsafe(PhiStack);
+  propagateCantBeAvail(PhiStack);
 
   // At this point, CanBeAvail will be true for a phi iff it's fully available
   // (empty Unavail) or partially available (non-empty Unavail) but down-safe
