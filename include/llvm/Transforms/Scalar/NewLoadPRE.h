@@ -1,3 +1,5 @@
+#define PROFILE_POINT __attribute__((noinline))
+
 namespace {
 enum OccType {
   OccReal,
@@ -533,7 +535,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   return false;
 }
 
-bool NewGVN::scalarPRE(Function &F) {
+bool NewGVN::scalarPRE(Function &F) PROFILE_POINT {
   // Pre-compute set of exit occurrences as it's the same for all cong classes.
   std::list<ExitOcc> ExitOccs;
   std::vector<Occurrence *> Ptrs;
