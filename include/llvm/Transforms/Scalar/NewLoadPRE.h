@@ -406,7 +406,6 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
         // probably dead if it has no side effects, but do set its def because
         // its phi operands uses need to be updated to RDom (later).
         R->setDef(*RDom);
-        // R->replaceWith(*RDom);
 
         // Mark its deadness. Quickly short-circuit if a store (which trivially
         // has side effects).
