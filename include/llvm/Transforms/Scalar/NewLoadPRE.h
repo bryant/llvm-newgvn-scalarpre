@@ -47,7 +47,7 @@ struct PhiOcc final : public Occurrence {
   // LocalNum is set to 0 to ensure that when sorted in DPO, phi occurrences
   // precede all other occurrences in the same block.
   PhiOcc(DomTreeNode &N, Occurrence &FirstOperand, BasicBlock &OpBlock)
-      : Occurrence{&N, 0, OccPhi}, Defs(1) {
+      : Occurrence{&N, 0, OccPhi} {
     addOperand(FirstOperand, OpBlock);
   }
 
