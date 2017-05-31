@@ -333,10 +333,10 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
     IDFCalc.addDef(RealOccs.back());
   }
 
-  // Phi occurrences are given operands as they are placed.
+  // Phi occurrences are given operands as they are placed. TODO: Since we'll
+  // need to iterate over all phis at several points of this pass, considering
+  // copying the values of Phis to a separate vector.
   DenseMap<const BasicBlock *, PhiOcc> Phis = IDFCalc.calculate();
-  std::vector<PhiOcc> PhiOccs;
-  PhiOccs.reserve(Phis.size());
   DPOSorted.reserve(DPOSorted.size() + Phis.size());
   for (auto &P : Phis) {
     DPOSorted.push_back(&P.second);
@@ -426,7 +426,8 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
 
   // Update phi operands to most-dominating real occs. Also start tracking which
   // predecessors are unavailable.
-  for (PhiOcc &Phi : PhiOccs) {
+  for (auto &Pair : Phis) {
+    PhiOcc &Phi = Pair.second;
     for (PhiOcc::Operand &Op : Phi.Defs)
       if (auto *R = dyn_cast<RealOcc>(Op.Occ))
         Op.Occ = R->getDef() ? R->getDef() : Op.Occ;
@@ -463,7 +464,8 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
     }
   }
 
-  for (PhiOcc &Phi : PhiOccs) {
+  for (auto &Pair : Phis) {
+    PhiOcc &Phi = Pair.second;
     assert(Phi.CanBeAvail && "Initial CanBeAvail should be true.");
     if ((!Phi.DownSafe && !Phi.Unavail.empty()) ||
         any_of(Phi.Unavail, [&](const BasicBlock *B) {
