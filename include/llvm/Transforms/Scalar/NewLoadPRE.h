@@ -76,19 +76,15 @@ struct PhiOcc final : public Occurrence {
 };
 
 struct RealOcc final : public Occurrence {
-  Occurrence *Def;
-  // ^ Possible values:
-  // - Before renaming:
-  //   - (Def *) -1u means that this may or may not be a new version.
-  //   - nullptr means that this is marked as a new version.
-  // - After renaming:
-  //   - nullptr means a new version and thus not redundant to anything.
-  //   - otherwise, a valid pointer.
+  PointerIntPair<Occurrence *, 1, bool> Def;
+  // ^ Points to the dominating occurrence that makes this RealOcc fully
+  // redundant. nullptr means that this isn't redundant to anything. The bool is
+  // true iff the instruction that this RealOcc wraps is leader of its cong
+  // class.
   PointerUnion<Instruction *, StoreInst *> I;
 
   RealOcc(DomTreeNode &N, unsigned LocalNum, Instruction &I_, bool NewVers)
-      : Occurrence{&N, LocalNum, OccReal},
-        Def(NewVers ? nullptr : reinterpret_cast<Occurrence *>(-1u)) {
+      : Occurrence{&N, LocalNum, OccReal}, Def(nullptr, NewVers) {
     if (auto *SI = dyn_cast<StoreInst>(&I_))
       I = SI;
     else
@@ -96,12 +92,14 @@ struct RealOcc final : public Occurrence {
   }
 
   void setDef(Occurrence &Occ) {
-    Def = &Occ;
+    Def.setPointer(&Occ);
     if (auto *P = dyn_cast<PhiOcc>(&Occ))
       P->addUse(*this);
   }
 
-  bool isNewVersion() const { return Def == nullptr; }
+  Occurrence *getDef() const { return Def.getPointer(); }
+
+  bool isNewVersion() const { return Def.getInt(); }
 
   PointerUnion<Instruction *, StoreInst *> &getInst() { return I; }
 
@@ -432,7 +430,7 @@ bool NewGVN::preClass(Function &F, CongruenceClass &Cong, ClearGuard IDFCalc,
   for (PhiOcc &Phi : PhiOccs) {
     for (PhiOcc::Operand &Op : Phi.Defs)
       if (auto *R = dyn_cast<RealOcc>(Op.Occ))
-        Op.Occ = R->Def ? R->Def : Op.Occ;
+        Op.Occ = R->getDef() ? R->getDef() : Op.Occ;
 
     // Fill in unavailable predecessors. TODO: This is quadratic in the number
     // of predecessors per phi.
