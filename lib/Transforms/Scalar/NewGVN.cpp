@@ -4264,4 +4264,4 @@ PreservedAnalyses NewGVNPass::run(Function &F, AnalysisManager<Function> &AM) {
   return PA;
 }
 
-#include "llvm/Transforms/Scalar/NewLoadPRE.h"
+#include "llvm/Transforms/Scalar/NewGVNPRE.h"
