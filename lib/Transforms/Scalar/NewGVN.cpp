@@ -794,9 +794,7 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
-  bool preClass(Function &, CongruenceClass &, ClearGuard,
-                std::vector<Occurrence *>);
-  bool scalarPRE(Function &);
+  bool insertFullyAvailPhis(CongruenceClass &, ClearGuard);
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
@@ -3464,7 +3462,6 @@ bool NewGVN::runGVN() {
   verifyStoreExpressions();
 
   Changed |= eliminateInstructions(F);
-  Changed |= EnableScalarPRE ? scalarPRE(F) : Changed;
 
   // Delete all instructions marked for deletion.
   for (Instruction *ToErase : InstructionsToErase) {
@@ -3895,6 +3892,7 @@ bool NewGVN::eliminateInstructions(Function &F) {
 
   // Map to store the use counts
   DenseMap<const Value *, unsigned int> UseCounts;
+  PlaceAndFill IDF(*DT, F.size());
   for (auto *CC : reverse(CongruenceClasses)) {
     DEBUG(dbgs() << "Eliminating in congruence class " << CC->getID() << "\n");
     // Track the equivalent store info so we can decide whether to try
@@ -3945,6 +3943,9 @@ bool NewGVN::eliminateInstructions(Function &F) {
     } else {
       // If this is a singleton, we can skip it.
       if (CC->size() != 1 || RealToTemp.count(Leader)) {
+        if (EnableScalarPRE)
+          insertFullyAvailPhis(CC, ClearGuard(IDF));
+
         // This is a stack because equality replacement/etc may place
         // constants in the middle of the member list, and we want to use
         // those constant values in preference to the current leader, over
