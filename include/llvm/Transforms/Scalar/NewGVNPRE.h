@@ -348,7 +348,8 @@ void computeFullyAvail(DenseMap<const BasicBlock *, PhiOcc> &Phis) {
 
 // This will find and insert phis at all fully available sites of Cong, which
 // are join points where each predecessor is dominated by a Cong member.
-bool NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
+bool NewGVN::insertFullyAvailPhis(CongruenceClass &Cong,
+                                  ClearGuard IDFCalc) PROFILE_POINT {
   if (Cong.size() <= 1 || !isa<BasicExpression>(Cong.getDefiningExpr()))
     // No possible fully redundant sites in singleton classes.
     return false;
