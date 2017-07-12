@@ -119,7 +119,7 @@ struct RealOcc final : public Occurrence {
 };
 
 // Exit occurrences live at bottom of exit blocks. A phi is down-unsafe if it
-// has a CFG path to an ExitOcc that doesn't cross a real Occurrence.
+// has a CFG path to an ExitOcc that doesn't cross a RealOcc.
 struct ExitOcc final : public Occurrence {
   // Exit occs live at the bottom of their (exit) blocks; set LocalNum
   // accordingly.
@@ -384,10 +384,9 @@ PROFILE_POINT bool NewGVN::insertFullyAvailPhis(CongruenceClass &Cong,
   // congruence class.
   for (auto &P : Phis) {
     PhiOcc &Phi = P.second;
-    if (Phi.FullyAvail)
-      if (!Phi.P)
-        Cong.insert(Phi.P = IRBuilder<>(getBlock(), getBlock()->begin())
-                                .CreatePHI(T, Phi.Defs.size()));
+    if (Phi.FullyAvail && !Phi.P)
+      Cong.insert(Phi.P = IRBuilder<>(getBlock(), getBlock()->begin())
+                              .CreatePHI(T, Phi.Defs.size()));
   }
 
   // Set incoming values of newly inserted PHINodes.
