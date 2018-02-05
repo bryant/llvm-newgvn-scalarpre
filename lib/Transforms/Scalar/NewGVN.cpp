@@ -3978,6 +3978,23 @@ struct PiggyBank {
   Node &operator[](NodeRef Ref) { return Banks[Ref.first][Ref.second]; }
 };
 
+struct PhiMap {
+  DenseMap<const BasicBlock *, PhiOcc *> M;
+  std::forward_list<PhiOcc> Pool;
+
+  template <typename... Args>
+  std::pair<PhiOcc *, bool> add(const BasicBlock &BB, Args &&... args) {
+    auto Pair = M.insert({&BB, nullptr});
+    if (Pair.second) {
+      Pool.emplace_front(std::forward<Args>(args)...);
+      Pair.first->second = &Pool.front();
+      return {&Pool.front(), true};
+    }
+    assert(Pair.first->second && "come on ffs");
+    return {Pair.first->second, false};
+  }
+};
+
 // This is essentially ForwardIDFCalculator, with additional functionality that
 // pushes operands into phis as they are placed. Doing this obviates the need
 // for a full DPO walk during renaming.
@@ -4022,8 +4039,6 @@ struct PlaceAndFill {
       DefQ[InsPair.first->second] = &Occ;
   }
 
-  using PhiMap = DenseMap<const BasicBlock *, PhiOcc>;
-
   void calculate(PhiMap &Phis) {
     while (!DefQ.empty())
       visitSubtree(DefQ.pop(), DefQ.CurrentLevel, Phis);
@@ -4062,16 +4077,19 @@ private:
           continue;
 
         // SuccNode belongs in CurDef's DF. Check if a phi has been placed.
-        PhiOcc NewPhi(SuccNode, *CurDef, *SubNode.getBlock());
-        auto InsPair = Phis.insert({Succ, std::move(NewPhi)});
-        if (!InsPair.second)
+        auto InsPair = Phis.add(*Succ, SuccNode, *CurDef, *SubNode.getBlock());
+        if (!InsPair.second) {
           // Already inserted a phi into this block, which means that its DF+
           // has already been visited.
           InsPair.first->addOperand(*CurDef, *SubNode.getBlock());
-        else if (!Defs.count(Succ))
+          DEBUG(dbgs() << "phi occ already existed in " << Succ->getName()
+                       << ": " << *InsPair.first << "\n");
+        } else if (!Defs.count(Succ)) {
           // New phi was inserted, meaning that this is the first encounter of
           // this DF member. Recurse on its DF.
-          DefQ.push(InsPair.first->second, SuccLevel);
+          DefQ.push(*InsPair.first, SuccLevel);
+          DEBUG(dbgs() << "Added new phi to " << Succ->getName() << "\n");
+        }
       }
 
       // Continue dom subtree DFS.
@@ -4091,8 +4109,7 @@ struct ClearGuard {
   auto addDef(Occurrence &Occ) -> decltype(Inner.addDef(Occ)) {
     return Inner.addDef(Occ);
   }
-  auto calculate(PlaceAndFill::PhiMap &Phis)
-      -> decltype(Inner.calculate(Phis)) {
+  auto calculate(PhiMap &Phis) -> decltype(Inner.calculate(Phis)) {
     return Inner.calculate(Phis);
   }
 };
@@ -4144,7 +4161,8 @@ Value *NewGVN::findPHIOfOpsLeader(const Expression *E,
 void PhiOcc::verify(const DominatorTree &DT) const {
   DEBUG(dbgs() << "Verifying " << *this << "\n");
   for (const PhiOcc::Operand &Op : Defs) {
-    DEBUG(dbgs() << "\tDef: " << *Op.Occ << "\n");
+    DEBUG(dbgs() << "\tDef(" << Op.Pred->getName() << "): " << *Op.Occ << " "
+                 << "\n");
     assert(Op.Pred);
     assert(Op.Occ && "Expected an operand.");
     assert(DT.dominates(Op.Occ->Node, DT.getNode(Op.Pred)));
@@ -4156,18 +4174,23 @@ void PhiOcc::verify(const DominatorTree &DT) const {
 // class member (a RealOcc) or a fully avail PhiOcc. The inverse of this is that
 // at least one operand is un-dominated by either of those (a _|_ operand in
 // SSAPRE parlance), or dominated by a phi that is known to be non-fully avail.
-void computeFullyAvail(DenseMap<const BasicBlock *, PhiOcc> &Phis) {
+void computeFullyAvail(PhiMap &Phis) {
   SmallVector<PhiOcc *, 32> Stack;
   auto pushUses = [&](PhiOcc &Phi) {
+    // dbgs() << "push uses of " << &Phi << "\n";
     Phi.FullyAvail = false;
-    for (PhiOcc::PhiUse &Use : Phi.PhiUses)
+    for (PhiOcc::PhiUse &Use : Phi.PhiUses) {
+      // dbgs() << "use: " << Use.User << "\n";
+      // assert(Use.User && "omfg.");
+      // dbgs() << "FullyAvail: " << Use.User->FullyAvail << "\n";
       if (Use.User->FullyAvail)
         Stack.push_back(Use.User);
+    }
   };
 
-  for (auto &Pair : Phis) {
+  for (auto &Pair : Phis.M) {
     const BasicBlock *BB = Pair.first;
-    PhiOcc &Phi = Pair.second;
+    PhiOcc &Phi = *Pair.second;
     // Will at least one of Phi's operands be _|_?
     if (Phi.FullyAvail &&
         Phi.Defs.size() < size_t(std::distance(pred_begin(BB), pred_end(BB)))) {
@@ -4196,7 +4219,7 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
   // each marker will be filled phi operands.
   std::vector<RealOcc> RealOccs;
   RealOccs.reserve(Cong.size());
-  DenseMap<const BasicBlock *, PhiOcc> Phis;
+  PhiMap Phis;
 
   for (Value *V : Cong) {
     if (auto *PN = dyn_cast<PHINode>(V)) {
@@ -4204,8 +4227,8 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
       // PN is an existing phi node in the congruence class. Wrap it in a PhiOcc
       // and toss it in with the other phis. PlaceAndFill will fill this PhiOcc
       // with Occurrence operands that correspond to the PHINode's.
-      auto InsPair = Phis.insert({PN->getParent(), PhiOcc(*PN, *DT)});
-      IDFCalc.addDef(InsPair.first->second);
+      auto InsPair = Phis.add(*PN->getParent(), *PN, *DT);
+      IDFCalc.addDef(*InsPair.first);
     } else {
       Instruction *I = cast<Instruction>(V);
       DEBUG(dbgs() << "Adding real def " << *I << "\n");
@@ -4216,16 +4239,16 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
   }
 
   IDFCalc.calculate(Phis);
-  for (auto &P : Phis)
+  for (auto &P : Phis.M)
     // Verify that PlaceAndFill did its job correctly.
-    P.second.verify(*DT);
+    P.second->verify(*DT);
   computeFullyAvail(Phis);
 
   // Materialize fully available PhiOccs into PHINodes and add into the
   // congruence class. Note that BasicExpression's type may not be the cong.
   // class type (see NewGVN::setBasicExpressionInfo).
-  for (auto &P : Phis) {
-    PhiOcc &Phi = P.second;
+  for (auto &P : Phis.M) {
+    PhiOcc &Phi = *P.second;
     DEBUG(dbgs() << "analyzing phi " << Phi << "\n");
     if (Phi.FullyAvail && !Phi.P) {
       Phi.P = IRBuilder<>(&Phi.getBlock(), Phi.getBlock().begin())
@@ -4236,9 +4259,9 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
     }
   }
 
-  // Set incoming values of newly inserted PHINodes.
-  for (auto &P : Phis) {
-    PhiOcc &Phi = P.second;
+  // Set incoming values of materialized PHINodes.
+  for (auto &P : Phis.M) {
+    PhiOcc &Phi = *P.second;
     DEBUG(dbgs() << Phi << "\n");
     // Could be a phi already existing in Cong. Those would already have
     // incoming values. Skip.
