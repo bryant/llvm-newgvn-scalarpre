@@ -4302,7 +4302,22 @@ bool NewGVN::eliminateInstructions(Function &F) {
 
   // Map to store the use counts
   DenseMap<const Value *, unsigned int> UseCounts;
-  PlaceAndFill IDF(*DT, F.size());
+  if (EnableScalarPRE) {
+    PlaceAndFill IDF(*DT, F.size());
+
+    std::vector<CongruenceClass *> sortedcc;
+    DenseSet<const Expression *> visited;
+    sortedcc.reserve(CongruenceClasses.size());
+
+    dbgs() << "post-order expr graph for " << F.getName() << "\n";
+    for (CongruenceClass *CC : CongruenceClasses) {
+      if (const Value *V = CC->getLeader())
+        if (const Expression *E = CC->getDefiningExpr())
+          dbgs() << "CC: " << *V << " = " << *E << "\n";
+      insertFullyAvailPhis(*CC, IDF);
+    }
+  }
+
   for (auto *CC : reverse(CongruenceClasses)) {
     DEBUG(dbgs() << "Eliminating in congruence class " << CC->getID() << "\n");
     // Track the equivalent store info so we can decide whether to try
@@ -4353,9 +4368,6 @@ bool NewGVN::eliminateInstructions(Function &F) {
     } else {
       // If this is a singleton, we can skip it.
       if (CC->size() != 1 || RealToTemp.count(Leader)) {
-        if (EnableScalarPRE)
-          insertFullyAvailPhis(*CC, ClearGuard(IDF));
-
         // This is a stack because equality replacement/etc may place
         // constants in the middle of the member list, and we want to use
         // those constant values in preference to the current leader, over
