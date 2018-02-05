@@ -4215,13 +4215,18 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
   computeFullyAvail(Phis);
 
   // Materialize fully available PhiOccs into PHINodes and add into the
-  // congruence class.
-  Type *T = cast<BasicExpression>(Cong.getDefiningExpr())->getType();
+  // congruence class. Note that BasicExpression's type may not be the cong.
+  // class type (see NewGVN::setBasicExpressionInfo).
   for (auto &P : Phis) {
     PhiOcc &Phi = P.second;
-    if (Phi.FullyAvail && !Phi.P)
-      Cong.insert(Phi.P = IRBuilder<>(&Phi.getBlock(), Phi.getBlock().begin())
-                              .CreatePHI(T, Phi.Defs.size()));
+    dbgs() << "analyzing phi " << Phi << "\n";
+    if (Phi.FullyAvail && !Phi.P) {
+      Phi.P = IRBuilder<>(&Phi.getBlock(), Phi.getBlock().begin())
+                  .CreatePHI(Cong.getType(), Phi.Defs.size());
+      DEBUG(dbgs() << "inserting new phi of type " << *Phi.P->getType()
+                   << " to " << Phi.getBlock().getName() << "\n");
+      Cong.insert(Phi.P);
+    }
   }
 
   // Set incoming values of newly inserted PHINodes.
