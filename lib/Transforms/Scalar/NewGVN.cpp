@@ -4062,12 +4062,12 @@ private:
           continue;
 
         // SuccNode belongs in CurDef's DF. Check if a phi has been placed.
-        PhiOcc NewPhi(SuccNode, *CurDef, CurDef->getBlock());
+        PhiOcc NewPhi(SuccNode, *CurDef, *SubNode.getBlock());
         auto InsPair = Phis.insert({Succ, std::move(NewPhi)});
         if (!InsPair.second)
           // Already inserted a phi into this block, which means that its DF+
           // has already been visited.
-          InsPair.first->second.addOperand(*CurDef, CurDef->getBlock());
+          InsPair.first->addOperand(*CurDef, *SubNode.getBlock());
         else if (!Defs.count(Succ))
           // New phi was inserted, meaning that this is the first encounter of
           // this DF member. Recurse on its DF.
