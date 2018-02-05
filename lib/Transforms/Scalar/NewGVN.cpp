@@ -330,6 +330,11 @@ public:
   const MemoryAccess *getMemoryLeader() const { return RepMemoryAccess; }
   void setMemoryLeader(const MemoryAccess *Leader) { RepMemoryAccess = Leader; }
 
+  Type *getType() const {
+    return getStoredValue() ? getStoredValue()->getType()
+                            : getLeader()->getType();
+  }
+
   // Forward propagation info
   const Expression *getDefiningExpr() const { return DefiningExpr; }
 
