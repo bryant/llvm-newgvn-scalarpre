@@ -3898,11 +3898,9 @@ struct RealOcc final : public Occurrence {
 
   raw_ostream &print(raw_ostream &Out) const {
     if (auto *II = I.dyn_cast<Instruction *>())
-      Out << "RealOcc @ "
-          << ": " << *II;
+      Out << "RealOcc @ " << II->getParent()->getName() << ": " << *II;
     else if (auto *II = I.dyn_cast<StoreInst *>())
-      Out << "RealOcc @ "
-          << ": " << *II;
+      Out << "RealOcc @ " << II->getParent()->getName() << ": " << *II;
     return Out;
   }
 
