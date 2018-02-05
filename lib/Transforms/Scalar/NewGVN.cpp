@@ -3857,7 +3857,13 @@ struct PhiOcc final : public Occurrence {
   void verify(const DominatorTree &DT) const;
 
   raw_ostream &print(raw_ostream &Out) const {
-    Out << "PhiOcc @ " << getBlock().getName();
+    if (P) {
+      Out << "Materialized PhiOcc ";
+      P->printAsOperand(Out);
+      Out << " @ ";
+    } else
+      Out << "PhiOcc @ ";
+    Out << getBlock().getName();
     return Out;
   }
 
