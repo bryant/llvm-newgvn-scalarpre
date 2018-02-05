@@ -492,7 +492,9 @@ template <> struct DenseMapInfo<const Expression *> {
 } // end namespace llvm
 
 namespace {
+
 struct ClearGuard;
+
 class NewGVN {
   Function &F;
   DominatorTree *DT;
