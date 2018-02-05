@@ -4041,6 +4041,8 @@ private:
   // targets of all J-edges whose shadow contains CurDef.
   void visitSubtree(PiggyBank::Node CurDef, unsigned CurDefLevel,
                     PhiMap &Phis) {
+    DEBUG(dbgs() << "Examining sub-tree of "
+                 << CurDef->Node->getBlock()->getName() << "\n");
     assert(SubtreeStack.empty());
     SubtreeStack.push_back(CurDef->Node);
     Visited.insert(CurDef->Node);
@@ -4048,6 +4050,8 @@ private:
     while (!SubtreeStack.empty()) {
       DomTreeNode &SubNode = *SubtreeStack.back();
       SubtreeStack.pop_back();
+      DEBUG(dbgs() << "sub-tree dpo: " << SubNode.getBlock()->getName()
+                   << "\n");
       for (BasicBlock *Succ : successors(SubNode.getBlock())) {
         DomTreeNode &SuccNode = *DT.getNode(Succ);
         unsigned SuccLevel;
@@ -4185,6 +4189,9 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
     // No possible fully redundant sites in singleton classes.
     return false;
 
+  DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
+               << " leader " << *Cong.getLeader() << "\n");
+
   // Place possible phi markers at DF+ of all Cong members. As they are placed,
   // each marker will be filled phi operands.
   std::vector<RealOcc> RealOccs;
@@ -4219,7 +4226,7 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
   // class type (see NewGVN::setBasicExpressionInfo).
   for (auto &P : Phis) {
     PhiOcc &Phi = P.second;
-    dbgs() << "analyzing phi " << Phi << "\n";
+    DEBUG(dbgs() << "analyzing phi " << Phi << "\n");
     if (Phi.FullyAvail && !Phi.P) {
       Phi.P = IRBuilder<>(&Phi.getBlock(), Phi.getBlock().begin())
                   .CreatePHI(Cong.getType(), Phi.Defs.size());
@@ -4232,20 +4239,29 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
   // Set incoming values of newly inserted PHINodes.
   for (auto &P : Phis) {
     PhiOcc &Phi = P.second;
+    DEBUG(dbgs() << Phi << "\n");
     // Could be a phi already existing in Cong. Those would already have
     // incoming values. Skip.
     if (Phi.FullyAvail && Phi.P->getNumIncomingValues() == 0) {
       for (const PhiOcc::Operand &Op : Phi.Defs) {
+        DEBUG(dbgs() << Op << "\n");
         if (RealOcc *R = dyn_cast<RealOcc>(Op.Occ)) {
           if (StoreInst *SI = R->getInst().dyn_cast<StoreInst *>())
             Phi.P->addIncoming(SI->getValueOperand(), Op.Pred);
-          else
+          else {
+            DEBUG(dbgs() << "addIncoming "
+                         << *R->getInst().dyn_cast<Instruction *>() << " to "
+                         << *Phi.P << "\n");
             Phi.P->addIncoming(R->getInst().dyn_cast<Instruction *>(), Op.Pred);
+          }
         } else
           Phi.P->addIncoming(cast<PhiOcc>(Op.Occ)->P, Op.Pred);
       }
     }
   }
+  DEBUG(dbgs() << "after insertFullyAvailPhis for " << *Cong.getLeader()
+               << ":\n");
+  DEBUG(F.print(dbgs()));
   return true;
 }
 bool NewGVN::eliminateInstructions(Function &F) {
@@ -4323,11 +4339,11 @@ bool NewGVN::eliminateInstructions(Function &F) {
     DenseSet<const Expression *> visited;
     sortedcc.reserve(CongruenceClasses.size());
 
-    dbgs() << "post-order expr graph for " << F.getName() << "\n";
+    DEBUG(dbgs() << "post-order expr graph for " << F.getName() << "\n");
     for (CongruenceClass *CC : CongruenceClasses) {
       if (const Value *V = CC->getLeader())
         if (const Expression *E = CC->getDefiningExpr())
-          dbgs() << "CC: " << *V << " = " << *E << "\n";
+          DEBUG(dbgs() << "CC: " << *V << " = " << *E << "\n");
       insertFullyAvailPhis(*CC, IDF);
     }
   }
