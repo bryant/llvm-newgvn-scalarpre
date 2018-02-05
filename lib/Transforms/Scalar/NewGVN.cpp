@@ -3931,6 +3931,10 @@ raw_ostream &operator<<(raw_ostream &O, const Occurrence &Occ) {
     llvm_unreachable("Invalid occurrence type.");
 }
 
+raw_ostream &operator<<(raw_ostream &O, const PhiOcc::Operand &Op) {
+  return O << "Phi Op @ " << Op.Pred->getName();
+}
+
 // PiggyBank from Sreedhar and Gao 1994. This structure fulfills the same
 // purpose as the priority_queue in IDFCalculator but does so with amortized
 // constant time per insertion and deletion.
