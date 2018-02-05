@@ -4180,7 +4180,8 @@ void computeFullyAvail(DenseMap<const BasicBlock *, PhiOcc> &Phis) {
 // are join points where each predecessor is dominated by a Cong member.
 __attribute__((noinline)) bool
 NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, ClearGuard IDFCalc) {
-  if (Cong.size() <= 1 || !isa<BasicExpression>(Cong.getDefiningExpr()))
+  if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
+      !isa<BasicExpression>(Cong.getDefiningExpr()))
     // No possible fully redundant sites in singleton classes.
     return false;
 
