@@ -3786,8 +3786,6 @@ private:
   SmallVector<std::pair<int, int>, 8> DFSStack;
 };
 
-} // end anonymous namespace
-
 enum OccType {
   OccReal,
   OccPhi,
@@ -4086,6 +4084,8 @@ struct ClearGuard {
     return Inner.calculate(Phis);
   }
 };
+
+} // end anonymous namespace
 
 // Given an expression, get the congruence class for it.
 CongruenceClass *NewGVN::getClassForExpression(const Expression *E) const {
