@@ -3967,6 +3967,7 @@ struct PiggyBank {
 
   NodeRef push(Occurrence &Occ, unsigned Level) {
     Banks[Level].push_back(&Occ);
+    CurrentLevel = std::max(CurrentLevel, Level);
     return {Level, Banks[Level].size() - 1};
   }
 
