@@ -4038,6 +4038,7 @@ private:
 
     while (!SubtreeStack.empty()) {
       DomTreeNode &SubNode = *SubtreeStack.back();
+      SubtreeStack.pop_back();
       for (BasicBlock *Succ : successors(SubNode.getBlock())) {
         DomTreeNode &SuccNode = *DT.getNode(Succ);
         unsigned SuccLevel;
@@ -4064,8 +4065,6 @@ private:
       for (DomTreeNode *Child : SubNode)
         if (Visited.insert(Child).second)
           SubtreeStack.push_back(Child);
-
-      SubtreeStack.pop_back();
     }
   }
 };
