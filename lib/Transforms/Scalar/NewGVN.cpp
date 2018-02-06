@@ -119,6 +119,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <forward_list>
 
 using namespace llvm;
 using namespace llvm::GVNExpression;
