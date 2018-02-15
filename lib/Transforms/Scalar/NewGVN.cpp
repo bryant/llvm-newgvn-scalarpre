@@ -3877,9 +3877,90 @@ void PhiOcc::verify(const DominatorTree &DT) const {
 // class member (a RealOcc) or a fully avail PhiOcc. The inverse of this is that
 // at least one operand is un-dominated by either of those (a _|_ operand in
 // SSAPRE parlance), or dominated by a phi that is known to be non-fully avail.
-template <typename PhiContainer> void computeFullyAvail(PhiContainer &&Phis) {
+void weakSauceOpts(ClearGuard &IDFCalc) {
   using namespace occ;
   SmallVector<PhiOcc *, 32> Stack;
+  auto pushUses = [&](PhiOcc &Phi) {
+    // dbgs() << "push uses of " << &Phi << "\n";
+    Phi.FullyAvail = false;
+    for (PhiOcc::PhiUse &Use : Phi.PhiUses) {
+      // dbgs() << "use: " << Use.User << "\n";
+      // assert(Use.User && "omfg.");
+      // dbgs() << "FullyAvail: " << Use.User->FullyAvail << "\n";
+      if (Use.User->FullyAvail)
+        Stack.push_back(Use.User);
+    }
+  };
+
+  for (PhiOcc &Phi : IDFCalc.getPhis()) {
+    const BasicBlock *BB = &Phi.getBlock();
+    // Will at least one of Phi's operands be _|_?
+    if (Phi.FullyAvail &&
+        Phi.Defs.size() < size_t(std::distance(pred_begin(BB), pred_end(BB)))) {
+      // Yes, so this phi and its direct users will themselves be non-fully
+      // avail. Propagate false by DFS.
+      pushUses(Phi);
+      while (!Stack.empty())
+        pushUses(*Stack.pop_back_val());
+    }
+  }
+}
+
+void computeDownSafety(const std::vector<Occurrence *> &OccsDFS,
+                       ClearGuard &IDFCalc) {
+  // A PhiOcc is down-unsafe if it is directly exposed to an ExitOcc or to a
+  // down-unsafe PhiOcc.
+
+  // ValueDFS sparse DPO technique.
+  SmallVector<Occurrence *, 32> Stack;
+  // DFS stack for propagating down-unsafety.
+  SmallVector<PhiOcc *, 32> PStack;
+  for (Occurrence *Occ : OccsDFS) {
+    while (!Stack.empty() && !Stack.back()->dominates(*Occ))
+      Stack.pop_back();
+    if (!Stack.empty())
+      if (auto *P = dyn_cast<PhiOcc>(Stack.back()))
+        if (isa<ExitOcc>(Occ)) {
+          P->setDownSafe(false);
+          PStack.push_back(P);
+        }
+  }
+
+  while (!PStack.empty()) {
+    PhiOcc *TOS = PStack.pop_back_val();
+    for (const PhiOcc::Operand &Op : TOS->Defs)
+      if (auto *P = dyn_cast<PhiOcc>(Op.Occ))
+        if (P->downSafe()) {
+          P->setDownSafe(false);
+          PStack.push_back(P);
+        }
+  }
+}
+
+void computeFullyAvail(std::ArrayRef<RealOcc> Reals, ClearGuard &IDFCalc,
+                       const DominatorTree &DT) {
+  using namespace occ;
+
+  std::vector<Occurrence *> OccsDFS;
+  std::forward_list<ExitOccs> Exits;
+  // Place exit occs. TODO: This is an immutable step.
+  for (BasicBlock &BB : *DT.getEntryBlock()->getParent())
+    if (isa<ReturnInst>(BB.getTerminator())) {
+      Exits.emplace_front(*DT.getNode(&BB));
+      OccsDFS.push_back(&Exits.front());
+    }
+
+  for (RealOcc &R : Reals)
+    OccsDFS.push_back(&R);
+  for (PhiOcc &Phi : IDFCalc.getPhis())
+    OccsDFS.push_back(&Phi);
+
+  std::sort(OccsDFS.begin(), OccsDFS.end(), [&](Occurrence *A, Occurrence *B) {
+    return A->in() < B->in() || A->LocalNum < B->LocalNum;
+  });
+
+  computeDownSafety(OccsDFS, IDFCalc);
+
   auto pushUses = [&](PhiOcc &Phi) {
     // dbgs() << "push uses of " << &Phi << "\n";
     Phi.FullyAvail = false;
@@ -3951,7 +4032,10 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
   for (PhiOcc &Phi : IDFCalc.getPhis())
     Phi.verify(*DT);
 
-  computeFullyAvail(IDFCalc.getPhis());
+  if (ScalarPRELvl < 2)
+    weakSauceOpts(IDFCalc);
+  else
+    computeFullyAvail(RealOccs, IDFCalc, DT);
 
   // Materialize fully available PhiOccs into PHINodes and add into the
   // congruence class. Note that BasicExpression's type may not be the cong.
