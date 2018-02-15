@@ -155,8 +155,7 @@ static cl::opt<bool> EnableStoreRefinement("enable-store-refinement",
 static cl::opt<bool> EnablePhiOfOps("enable-phi-of-ops", cl::init(true),
                                     cl::Hidden);
 
-static cl::opt<bool> EnableScalarPRE("enable-scalar-pre", cl::init(true),
-                                     cl::Hidden);
+static cl::opt<unsigned> ScalarPRELvl("scalar-pre", cl::init(0), cl::Hidden);
 
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
@@ -4063,7 +4062,7 @@ bool NewGVN::eliminateInstructions(Function &F) {
   // Perform PRE insertions if requested. Redundant instructions will dominated
   // by fully available phi nodes in the same congruence class and thus
   // eliminated later.
-  if (EnableScalarPRE) {
+  if (ScalarPRELvl) {
     idf::PlaceAndFill IDF(*DT);
 
     // PRE order matters. If definingExpr(B) uses definingExpr(A) for cong.
