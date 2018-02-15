@@ -63,7 +63,8 @@ struct Occurrence {
   // TODO: This could return the incorrect result if the dom tree changes, which
   // may happen if we split crit edges.
   bool dominates(const Occurrence &Other) const {
-    return in() <= Other.in() && Other.out() <= out();
+    return (in() == Other.in() && LocalNum < Other.LocalNum) ||
+           (in() < Other.in() && Other.out() < out());
   }
 };
 
