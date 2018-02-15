@@ -3914,8 +3914,7 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
   // Skip singleton classes because PRE's sole effect would be loop invariant
   // hoisting and there already exists a separate pass to do this.
   if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
-      !isa<BasicExpression>(Cong.getDefiningExpr()) ||
-      alwaysAvailable(Cong.getLeader()))
+      !isa<BasicExpression>(Cong.getDefiningExpr()))
     return false;
 
   DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
@@ -3935,12 +3934,14 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
       auto InsPair =
           IDFCalc.addPhiOcc(PhiOcc(*PN, *DT->getNode(PN->getParent())));
       IDFCalc.addDef(*InsPair.first);
-    } else {
-      Instruction *I = cast<Instruction>(V);
+    } else if (auto *I = dyn_cast<Instruction>(V)) {
       DEBUG(dbgs() << "Adding real def " << *I << "\n");
       RealOccs.emplace_back(*DT->getNode(I->getParent()), InstrToDFSNum(I), *I,
                             I == Cong.getLeader());
       IDFCalc.addDef(RealOccs.back());
+    } else {
+      DEBUG(dbgs() << "Got a non-instruction class member: " << *V << "\n");
+      llvm_unreachable("Unexpected congruence class member kind.");
     }
   }
 
