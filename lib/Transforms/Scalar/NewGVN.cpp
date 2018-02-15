@@ -52,7 +52,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Transforms/Scalar/NewGVN.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -77,7 +76,6 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/Analysis/Utils/Local.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
@@ -106,6 +104,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVNExpression.h"
+#include "llvm/Transforms/Scalar/NewGVN.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/PredicateInfo.h"
 #include "llvm/Transforms/Utils/VNCoercion.h"
 #include <algorithm>
@@ -888,9 +888,8 @@ bool StoreExpression::equals(const Expression &Other) const {
 
 // Determine if the edge From->To is a backedge
 bool NewGVN::isBackedge(BasicBlock *From, BasicBlock *To) const {
-  return From == To ||
-         RPOOrdering.lookup(DT->getNode(From)) >=
-             RPOOrdering.lookup(DT->getNode(To));
+  return From == To || RPOOrdering.lookup(DT->getNode(From)) >=
+                           RPOOrdering.lookup(DT->getNode(To));
 }
 
 #ifndef NDEBUG
@@ -958,8 +957,7 @@ static bool isCopyOfAPHI(const Value *V) {
 // order. The BlockInstRange numbers are generated in an RPO walk of the basic
 // blocks.
 void NewGVN::sortPHIOps(MutableArrayRef<ValPair> Ops) const {
-  llvm::sort(Ops.begin(), Ops.end(),
-             [&](const ValPair &P1, const ValPair &P2) {
+  llvm::sort(Ops.begin(), Ops.end(), [&](const ValPair &P1, const ValPair &P2) {
     return BlockInstRange.lookup(P1.second).first <
            BlockInstRange.lookup(P2.second).first;
   });
@@ -1255,7 +1253,7 @@ NewGVN::createCallExpression(CallInst *CI, const MemoryAccess *MA) const {
 bool NewGVN::someEquivalentDominates(const Instruction *Inst,
                                      const Instruction *U) const {
   auto *CC = ValueToClass.lookup(Inst);
-   // This must be an instruction because we are only called from phi nodes
+  // This must be an instruction because we are only called from phi nodes
   // in the case that the value it needs to check against is an instruction.
 
   // The most likely candiates for dominance are the leader and the next leader.
@@ -1726,8 +1724,7 @@ bool NewGVN::isCycleFree(const Instruction *I) const {
 
 // Evaluate PHI nodes symbolically and create an expression result.
 const Expression *
-NewGVN::performSymbolicPHIEvaluation(ArrayRef<ValPair> PHIOps,
-                                     Instruction *I,
+NewGVN::performSymbolicPHIEvaluation(ArrayRef<ValPair> PHIOps, Instruction *I,
                                      BasicBlock *PHIBlock) const {
   // True if one of the incoming phi edges is a backedge.
   bool HasBackedge = false;
@@ -2004,7 +2001,7 @@ NewGVN::performSymbolicEvaluation(Value *V,
     case Instruction::Load:
       E = performSymbolicLoadEvaluation(I);
       break;
-    case Instruction::BitCast: 
+    case Instruction::BitCast:
       E = createExpression(I);
       break;
     case Instruction::ICmp:
@@ -3247,7 +3244,6 @@ void NewGVN::verifyMemoryCongruency() const {
         return ReachableEdges.count(
                    {FirstMP->getIncomingBlock(U), FirstMP->getBlock()}) &&
                isa<MemoryDef>(U);
-
       };
       // All arguments should in the same class, ignoring unreachable arguments
       auto FilteredPhiArgs =
@@ -3786,9 +3782,8 @@ public:
     // These two should always be in sync at this point.
     assert(ValueStack.size() == DFSStack.size() &&
            "Mismatch between ValueStack and DFSStack");
-    while (
-        !DFSStack.empty() &&
-        !(DFSIn >= DFSStack.back().first && DFSOut <= DFSStack.back().second)) {
+    while (!DFSStack.empty() && !(DFSIn >= DFSStack.back().first &&
+                                  DFSOut <= DFSStack.back().second)) {
       DFSStack.pop_back();
       ValueStack.pop_back();
     }
