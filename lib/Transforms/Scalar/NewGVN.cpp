@@ -3914,7 +3914,8 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
   // Skip singleton classes because PRE's sole effect would be loop invariant
   // hoisting and there already exists a separate pass to do this.
   if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
-      !isa<BasicExpression>(Cong.getDefiningExpr()))
+      !isa<BasicExpression>(Cong.getDefiningExpr()) ||
+      alwaysAvailable(Cong.getLeader()))
     return false;
 
   DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
