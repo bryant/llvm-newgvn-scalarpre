@@ -3937,7 +3937,7 @@ void computeDownSafety(const std::vector<Occurrence *> &OccsDFS,
   }
 }
 
-void computeFullyAvail(std::ArrayRef<RealOcc> Reals, ClearGuard &IDFCalc,
+void computeFullyAvail(ArrayRef<RealOcc> Reals, ClearGuard &IDFCalc,
                        const DominatorTree &DT) {
   using namespace occ;
 
