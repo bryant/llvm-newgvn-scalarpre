@@ -797,7 +797,6 @@ private:
                                     SmallVectorImpl<ValueDFS> &) const;
 
   bool eliminateInstructions(Function &);
-  bool insertFullyAvailPhis(CongruenceClass &, idf::ClearGuard);
   void replaceInstruction(Instruction *, Value *);
   void markInstructionForDeletion(Instruction *);
   void deleteInstructionsInBlock(BasicBlock *);
@@ -3987,23 +3986,9 @@ void computeFullyAvail(ArrayRef<RealOcc> Reals, ClearGuard &IDFCalc,
   }
 }
 
-// Figure out where we can PRE. For the (join) points where we can, insert
-// missing copies of Cong's leader and a fully available PHINode.
-__attribute__((noinline)) bool
-NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
-  using namespace occ;
-  // Skip singleton classes because PRE's sole effect would be loop invariant
-  // hoisting and there already exists a separate pass to do this.
-  if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
-      !isa<BasicExpression>(Cong.getDefiningExpr()))
-    return false;
-
-  DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
-               << " leader " << *Cong.getLeader() << "\n");
-
-  // Place possible phi markers at DF+ of all Cong members. As they are placed,
-  // each marker will be filled phi operands.
-  std::vector<RealOcc> RealOccs;
+// Place possible phi markers at DF+ of all Cong members. As they are placed,
+// each marker will be filled phi operands.
+void NewPRE::placePhis() {
   RealOccs.reserve(Cong.size());
 
   for (Value *V : Cong) {
@@ -4026,16 +4011,72 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
     }
   }
 
-  IDFCalc.calculate();
+  IDF.calculate();
+}
 
-  // Verify that PlaceAndFill did its job correctly.
-  for (PhiOcc &Phi : IDFCalc.getPhis())
-    Phi.verify(*DT);
+// Figure out where we can PRE. For the (join) points where we can, insert
+// missing copies of Cong's leader and a fully available PHINode.
+void NewPRE::insertFullyAvailPhis(CongruenceClass &Cong, bool PRE) {
+  using namespace occ;
+  // Skip singleton classes because PRE's sole effect would be loop invariant
+  // hoisting and there already exists a separate pass to do this.
+  if (Cong.size() <= 1 || !Cong.getDefiningExpr() ||
+      !isa<BasicExpression>(Cong.getDefiningExpr()))
+    return false;
 
-  if (ScalarPRELvl < 2)
-    weakSauceOpts(IDFCalc);
+  placePhis();
+
+  if (PRE)
+    computeWillBeAvail(RealOccs, IDFCalc, DT);
   else
     computeFullyAvail(RealOccs, IDFCalc, DT);
+
+  materializePhis();
+
+  clear();
+
+  // old
+
+  DEBUG(dbgs() << "insertFullyAvailPhis for " << *Cong.getDefiningExpr()
+               << " leader " << *Cong.getLeader() << "\n");
+
+  // Place possible phi markers at DF+ of all Cong members. As they are placed,
+  // each marker will be filled phi operands.
+  assert(RealOccs.empty() && "Should clear out after each congruence PRE.");
+  RealOccs.reserve(Cong.size());
+
+  for (Value *V : Cong) {
+    if (auto *PN = dyn_cast<PHINode>(V)) {
+      DEBUG(dbgs() << "Adding existing phi node " << *PN << "\n");
+      // PN is an existing phi node in the congruence class. Wrap it in a PhiOcc
+      // and toss it in with the other phis. PlaceAndFill will fill this PhiOcc
+      // with Occurrence operands that correspond to the PHINode's.
+      auto InsPair =
+          IDFCalc.addPhiOcc(PhiOcc(*PN, *DT->getNode(PN->getParent())));
+      IDFCalc.addDef(*InsPair.first);
+    } else if (auto *I = dyn_cast<Instruction>(V)) {
+      DEBUG(dbgs() << "Adding real def " << *I << "\n");
+      RealOccs.emplace_back(*DT->getNode(I->getParent()), InstrToDFSNum(I), *I,
+                            I == Cong.getLeader());
+      IDFCalc.addDef(RealOccs.back());
+    } else {
+      DEBUG(dbgs() << "Got a non-instruction class member: " << *V << "\n");
+      llvm_unreachable("Unexpected congruence class member kind.");
+    }
+  }
+
+  IDF.calculate();
+
+  // Verify that PlaceAndFill did its job correctly.
+  for (PhiOcc &Phi : IDF.getPhis())
+    Phi.verify(*DT);
+
+  if (PRE)
+    computeFullyAvail(RealOccs, IDFCalc, DT);
+  else
+    weakSauceOpts(IDFCalc);
+
+  materializePhis();
 
   // Materialize fully available PhiOccs into PHINodes and add into the
   // congruence class. Note that BasicExpression's type may not be the cong.
@@ -4074,11 +4115,10 @@ NewGVN::insertFullyAvailPhis(CongruenceClass &Cong, idf::ClearGuard IDFCalc) {
     }
   }
 
-  DEBUG(dbgs() << "after insertFullyAvailPhis for " << *Cong.getLeader()
-               << ":\n");
-  DEBUG(F.print(dbgs()));
+  IDF.clear();
   return true;
 }
+
 bool NewGVN::eliminateInstructions(Function &F) {
   // This is a non-standard eliminator. The normal way to eliminate is
   // to walk the dominator tree in order, keeping track of available
@@ -4149,12 +4189,12 @@ bool NewGVN::eliminateInstructions(Function &F) {
   // by fully available phi nodes in the same congruence class and thus
   // eliminated later.
   if (ScalarPRELvl) {
-    idf::PlaceAndFill IDF(*DT);
+    NewPRE PRE(*this, *DT);
 
     // PRE order matters. If definingExpr(B) uses definingExpr(A) for cong.
     // classes A and B, then we need to PRE A before B.
     for (CongruenceClass *CC : CongruenceClasses)
-      insertFullyAvailPhis(*CC, IDF);
+      PRE.insertFullyAvailPhis(*CC, ScalarPRELvl > 1);
   }
 
   // Map to store the use counts

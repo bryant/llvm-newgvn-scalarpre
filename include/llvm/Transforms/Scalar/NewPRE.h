@@ -353,7 +353,7 @@ private:
 
 // To avoid re-allocations, we re-use the same PlaceAndFill instance to PRE each
 // congruence class. ClearGuard ensures that PlaceAndFill is cleared in between
-// PREs.
+// PREs. TODO: Remove once unused.
 struct ClearGuard {
   PlaceAndFill &Inner;
 
@@ -369,3 +369,36 @@ struct ClearGuard {
   auto calculate() -> decltype(Inner.calculate()) { return Inner.calculate(); }
 };
 } // namespace idf
+
+namespace {
+class NewGVN;
+
+class CongruenceClass;
+
+class NewPRE {
+  NewGVN &GVN;
+  DominatorTree &DT;
+
+  // Owns the PhiOccs, too.
+  PlaceAndFill IDF;
+  std::vector<ExitOcc> ExitOccs;
+  std::vector<RealOcc> RealOccs;
+
+public:
+  NewPRE(NewGVN &GVN, DominatorTree &DT) : GVN(GVN), DT(DT), IDF(DT) {
+    for (DomTreeNode *DTN : nodes(&DT))
+      if (isa<ReturnInst>(DTN->getBlock()->getTerminator()))
+        ExitOccs.emplace_back(*DTN);
+  }
+
+  // Compute and insert fully available phis. Partial redundancy elim is only
+  // performed if PRE is true.
+  void insertFullyAvailPhis(CongruenceClass &, bool PRE);
+
+  void placePhis(CongruenceClass &);
+
+  void clear();
+
+private:
+};
+} // namespace
